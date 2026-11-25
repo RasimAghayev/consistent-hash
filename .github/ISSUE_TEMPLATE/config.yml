@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: ConsistentHash Community Discussion
+    url: https://github.com/RasimAghayev/consistent-hash/discussions
+    about: Ask questions and discuss ConsistentHash in GitHub Discussions.
