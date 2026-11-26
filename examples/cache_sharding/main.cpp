@@ -9,7 +9,8 @@ using namespace consistent_hash;
 int main() {
     RingHasher<> cache(150);
     for (int i = 0; i < 4; ++i) {
-        cache.add_node({"cache-" + std::to_string(i), "10.0.0." + std::to_string(i) + ":11211",
+        cache.add_node({"cache-" + std::to_string(i),
+                        "10.0.0." + std::to_string(i) + ":11211",
                         100, "", NodeStatus::Active, {}});
     }
 
@@ -18,7 +19,9 @@ int main() {
     std::map<std::string, int> shard_counts;
     for (int i = 0; i < objects; ++i) {
         std::string key = "object:" + std::to_string(i);
-        shard_counts[cache.lookup(key)]++;
+        if (auto opt = cache.lookup(key); opt) {
+            shard_counts[*opt]++;
+        }
     }
     for (const auto& [node, c] : shard_counts) {
         std::cout << "  " << node << ": " << c << " objects\n";

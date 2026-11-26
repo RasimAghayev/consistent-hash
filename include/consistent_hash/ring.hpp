@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "consistent_hash/consistent_hash.hpp"
@@ -18,16 +20,20 @@ namespace consistent_hash {
 // Ring consistent hashing with virtual nodes, optional weighting and
 // zone-aware placement. Lookup is O(log V) via binary search on the sorted
 // virtual-node ring.
-template <typename NodeId = std::string, typename Key = std::string>
-class RingHasher : public ConsistentHasher<NodeId, Key> {
+template <NodeIdType NodeId = std::string, KeyType Key = std::string,
+          KeyHasher<Key> Hasher = DefaultHasher<Key>>
+class RingHasher : public ConsistentHasher<NodeId, Key, Hasher> {
 public:
-    using Base = ConsistentHasher<NodeId, Key>;
+    using Base = ConsistentHasher<NodeId, Key, Hasher>;
     using NodeType = typename Base::NodeType;
     using MigrationType = typename Base::MigrationType;
     using StatsType = typename Base::StatsType;
+    using Result = typename Base::Result;
+    using ErrorCode = typename Base::ErrorCode;
 
     explicit RingHasher(size_t virtual_nodes_per_node = 150)
-        : vnodes_per_node_(virtual_nodes_per_node == 0 ? 1 : virtual_nodes_per_node) {
+        : vnodes_per_node_(virtual_nodes_per_node == 0 ? 1 : virtual_nodes_per_node),
+          hasher_{} {
         probe_keys_.reserve(1000);
         for (size_t i = 0; i < 1000; ++i) {
             probe_keys_.push_back(Key("probe:" + std::to_string(i)));
@@ -39,9 +45,30 @@ public:
         add_node_unlocked(node);
     }
 
+    bool upsert_node(const NodeType& node) override {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        const bool is_new = nodes_.find(node.id) == nodes_.end();
+        add_node_unlocked(node);
+        return is_new;
+    }
+
     void remove_node(const NodeId& id) override {
         std::unique_lock<std::shared_mutex> lock(mutex_);
         remove_node_locked(id);
+    }
+
+    Result update_weight(const NodeId& id, uint32_t weight) override {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        auto it = nodes_.find(id);
+        if (it == nodes_.end()) {
+            return Result{ErrorCode::NodeNotFound, "Node not found: " + id};
+        }
+        if (weight == 0 || weight > 1000) {
+            return Result{ErrorCode::InvalidWeight, "Weight must be 1..1000"};
+        }
+        it->second.weight = weight;
+        rebuild_ring_unlocked();
+        return Result{};
     }
 
     bool has_node(const NodeId& id) const override {
@@ -49,14 +76,33 @@ public:
         return nodes_.find(id) != nodes_.end();
     }
 
-    NodeId lookup(const Key& key) const override {
+    std::optional<NodeId> lookup(const Key& key) const override {
         std::shared_lock<std::shared_mutex> lock(mutex_);
-        return lookup_unlocked(key);
+        return lookup_opt_unlocked(key);
+    }
+
+    NodeId lookup_or_throw(const Key& key) const override {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        if (auto opt = lookup_opt_unlocked(key); opt) {
+            return *opt;
+        }
+        throw std::runtime_error("RingHasher: no active nodes available");
     }
 
     std::vector<NodeId> lookup_n(const Key& key, size_t n) const override {
         std::shared_lock<std::shared_mutex> lock(mutex_);
         return lookup_n_unlocked(key, n);
+    }
+
+    std::vector<std::optional<NodeId>> lookup_bulk(
+        const std::vector<Key>& keys) const override {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        std::vector<std::optional<NodeId>> results;
+        results.reserve(keys.size());
+        for (const auto& k : keys) {
+            results.push_back(lookup_opt_unlocked(k));
+        }
+        return results;
     }
 
     std::vector<MigrationType> rebalance() override {
@@ -82,6 +128,36 @@ public:
         metrics_.clear();
     }
 
+    std::string serialize() const override {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        // Simple JSON-like serialization
+        std::string result = "{";
+        result += "\"vnodes_per_node\":" + std::to_string(vnodes_per_node_) + ",";
+        result += "\"preferred_zone\":\"" + preferred_zone_ + "\",";
+        result += "\"nodes\":[";
+        bool first = true;
+        for (const auto& [id, node] : nodes_) {
+            if (!first) result += ",";
+            first = false;
+            result += "{\"id\":\"" + id + "\",";
+            result += "\"address\":\"" + node.address + "\",";
+            result += "\"weight\":" + std::to_string(node.weight) + ",";
+            result += "\"zone\":\"" + node.zone + "\",";
+            result += "\"status\":" + std::to_string(static_cast<int>(node.status)) + "}";
+        }
+        result += "]}";
+        return result;
+    }
+
+    Result deserialize([[maybe_unused]] std::string_view data) override {
+        // Simple parser - in production use a proper JSON library
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        clear();
+        // For now just return unsupported
+        return Result{ErrorCode::InvalidArgument,
+                      "Deserialization not fully implemented; use JSON library"};
+    }
+
     // Zone-aware: when set, lookup prefers a node in this zone.
     void preferred_zone(const std::string& zone) {
         std::unique_lock<std::shared_mutex> lock(mutex_);
@@ -98,13 +174,20 @@ private:
     void add_node_unlocked(const NodeType& node) {
         remove_node_locked(node.id);  // replace if re-added
         nodes_[node.id] = node;
-        const size_t count =
-            std::max<size_t>(1, (vnodes_per_node_ * node.weight) / 100);
-        const uint64_t base = detail::fnv1a_64(node.id);
-        uint64_t vh = base;
-        for (size_t i = 0; i < count; ++i) {
-            vh = hash_combine(vh, static_cast<uint64_t>(i));
-            ring_.push_back(Entry{vh, node.id});
+        rebuild_ring_unlocked();
+    }
+
+    void rebuild_ring_unlocked() {
+        ring_.clear();
+        for (const auto& [id, node] : nodes_) {
+            const size_t count =
+                std::max<size_t>(1, (vnodes_per_node_ * node.weight) / 100);
+            const uint64_t base = detail::fnv1a_64(node.id);
+            uint64_t vh = base;
+            for (size_t i = 0; i < count; ++i) {
+                vh = hash_combine(vh, static_cast<uint64_t>(i));
+                ring_.push_back(Entry{vh, node.id});
+            }
         }
         std::sort(ring_.begin(), ring_.end(),
                   [](const Entry& a, const Entry& b) { return a.hash < b.hash; });
@@ -119,9 +202,9 @@ private:
     }
 
     // Caller must hold the mutex.
-    NodeId lookup_unlocked(const Key& key) const {
+    std::optional<NodeId> lookup_opt_unlocked(const Key& key) const {
         if (ring_.empty()) {
-            throw std::runtime_error("RingHasher: no nodes available");
+            return std::nullopt;
         }
         const uint64_t h = hasher_(key);
         auto it = std::lower_bound(ring_.begin(), ring_.end(), h,
@@ -152,7 +235,7 @@ private:
                 return e.id;
             }
         }
-        throw std::runtime_error("RingHasher: no active nodes available");
+        return std::nullopt;
     }
 
     // Caller must hold the mutex.
@@ -188,10 +271,8 @@ private:
         migrations.reserve(probe_keys_.size());
         std::map<Key, NodeId> current;
         for (const auto& k : probe_keys_) {
-            try {
-                current[k] = lookup_unlocked(k);
-            } catch (...) {
-                continue;
+            if (auto opt = lookup_opt_unlocked(k); opt) {
+                current[k] = *opt;
             }
         }
         for (const auto& [k, node] : current) {
@@ -208,9 +289,13 @@ private:
 
     StatsType compute_stats_unlocked() const {
         StatsType s;
-        s.migration_count = metrics_.migration_count();
-        s.avg_lookup_ns = metrics_.avg_lookup_ns();
-        s.p99_lookup_ns = metrics_.p99_lookup_ns();
+        auto snap = metrics_.snapshot();
+        s.migration_count = snap.migration_count;
+        s.avg_lookup_ns = snap.avg_lookup_ns;
+        s.p50_lookup_ns = snap.p50_lookup_ns;
+        s.p90_lookup_ns = snap.p90_lookup_ns;
+        s.p99_lookup_ns = snap.p99_lookup_ns;
+        s.p999_lookup_ns = snap.p999_lookup_ns;
         if (nodes_.empty()) return s;
         try {
             auto dist = measure_distribution(*this, probe_keys_);
@@ -234,7 +319,7 @@ private:
     std::string preferred_zone_;
     Metrics metrics_;
     mutable std::shared_mutex mutex_;
-    DefaultHasher<Key> hasher_;
+    Hasher hasher_;
 };
 
 }  // namespace consistent_hash

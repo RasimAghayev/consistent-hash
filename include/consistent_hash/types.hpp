@@ -41,7 +41,10 @@ struct DistributionStats {
     double min_load = 0.0;
     uint64_t migration_count = 0;
     double avg_lookup_ns = 0.0;
+    double p50_lookup_ns = 0.0;
+    double p90_lookup_ns = 0.0;
     double p99_lookup_ns = 0.0;
+    double p999_lookup_ns = 0.0;
 };
 
 }  // namespace consistent_hash

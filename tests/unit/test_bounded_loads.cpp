@@ -15,7 +15,9 @@ TEST(BoundedLoadsTest, LookupReturnsValidNode) {
     }
     std::set<std::string> seen;
     for (int i = 0; i < 200; ++i) {
-        seen.insert(h.lookup("key:" + std::to_string(i)));
+        if (auto opt = h.lookup("key:" + std::to_string(i)); opt) {
+            seen.insert(opt.value());
+        }
     }
     EXPECT_EQ(seen.size(), 4u);
 }
@@ -38,7 +40,12 @@ TEST(BoundedLoadsTest, CapacityLimitsLoad) {
 
 TEST(BoundedLoadsTest, ThrowsWhenEmpty) {
     BoundedLoadsHasher<> h;
-    EXPECT_THROW(h.lookup("key"), std::runtime_error);
+    EXPECT_THROW(h.lookup_or_throw("key"), std::runtime_error);
+}
+
+TEST(BoundedLoadsTest, LookupReturnsNulloptWhenEmpty) {
+    BoundedLoadsHasher<> h;
+    EXPECT_FALSE(h.lookup("key").has_value());
 }
 
 TEST(BoundedLoadsTest, RemoveNode) {
@@ -49,7 +56,7 @@ TEST(BoundedLoadsTest, RemoveNode) {
     EXPECT_FALSE(h.has_node("n1"));
     EXPECT_EQ(h.node_count(), 1u);
     for (int i = 0; i < 20; ++i) {
-        EXPECT_EQ(h.lookup("k" + std::to_string(i)), "n2");
+        EXPECT_EQ(h.lookup("k" + std::to_string(i)).value(), "n2");
     }
 }
 

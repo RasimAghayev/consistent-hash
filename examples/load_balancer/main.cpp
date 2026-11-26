@@ -17,7 +17,9 @@ int main() {
     const int requests = 5000;
     std::map<std::string, int> counts;
     for (int i = 0; i < requests; ++i) {
-        counts[lb.lookup("request:" + std::to_string(i))]++;
+        if (auto opt = lb.lookup("request:" + std::to_string(i)); opt) {
+            counts[*opt]++;
+        }
     }
     for (const auto& [node, c] : counts) {
         std::cout << "  " << node << ": " << c << " requests\n";

@@ -9,8 +9,9 @@ using namespace consistent_hash;
 int main() {
     RendezvousHasher<> shards;
     for (int i = 0; i < 6; ++i) {
-        shards.add_node({"shard-" + std::to_string(i), "10.0.0." + std::to_string(i) + ":5432",
-                        100, "", NodeStatus::Active, {}});
+        shards.add_node({"shard-" + std::to_string(i),
+                         "10.0.0." + std::to_string(i) + ":5432",
+                         100, "", NodeStatus::Active, {}});
     }
 
     std::cout << "=== DB sharding demo (rendezvous/HRW, 6 shards) ===\n";

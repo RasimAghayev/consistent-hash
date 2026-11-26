@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <map>
+#include <optional>
 #include <string>
 
 using namespace consistent_hash;
@@ -23,7 +24,11 @@ static std::vector<std::string> make_keys(int n) {
 static std::map<std::string, int> histogram(ConsistentHasher<>& h,
                                             const std::vector<std::string>& keys) {
     std::map<std::string, int> counts;
-    for (const auto& k : keys) counts[h.lookup(k)]++;
+    for (const auto& k : keys) {
+        if (auto opt = h.lookup(k); opt) {
+            counts[opt.value()]++;
+        }
+    }
     return counts;
 }
 
@@ -91,7 +96,9 @@ TEST(PropertyMonotonicity, AddingNodeMovesMinority) {
     const int keys = 300;
     std::map<std::string, std::string> before;
     for (int i = 0; i < keys; ++i) {
-        before["k" + std::to_string(i)] = h.lookup("k" + std::to_string(i));
+        if (auto opt = h.lookup("k" + std::to_string(i)); opt) {
+            before["k" + std::to_string(i)] = opt.value();
+        }
     }
 
     h.add_node({"n3", "", 100, "", NodeStatus::Active, {}});
@@ -99,7 +106,7 @@ TEST(PropertyMonotonicity, AddingNodeMovesMinority) {
 
     size_t moved = 0;
     for (const auto& [k, b] : before) {
-        if (h.lookup(k) != b) ++moved;
+        if (h.lookup(k).value() != b) ++moved;
     }
     EXPECT_LT(static_cast<double>(moved) / keys, 0.5);
 }

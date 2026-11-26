@@ -16,9 +16,10 @@ TEST(RendezvousTest, LookupReturnsValidNode) {
     }
     std::set<std::string> seen;
     for (int i = 0; i < 1000; ++i) {
-        std::string owner = h.lookup("key:" + std::to_string(i));
-        EXPECT_TRUE(owner.rfind("n", 0) == 0);
-        seen.insert(owner);
+        auto opt = h.lookup("key:" + std::to_string(i));
+        EXPECT_TRUE(opt.has_value());
+        EXPECT_TRUE(opt.value().rfind("n", 0) == 0);
+        seen.insert(opt.value());
     }
     EXPECT_EQ(seen.size(), 8u);
 }
@@ -27,16 +28,21 @@ TEST(RendezvousTest, Deterministic) {
     RendezvousHasher<> h;
     h.add_node({"a", "", 100, "", NodeStatus::Active, {}});
     h.add_node({"b", "", 100, "", NodeStatus::Active, {}});
-    std::string first = h.lookup("rv-key");
+    std::string first = h.lookup("rv-key").value();
     RendezvousHasher<> h2;
     h2.add_node({"a", "", 100, "", NodeStatus::Active, {}});
     h2.add_node({"b", "", 100, "", NodeStatus::Active, {}});
-    EXPECT_EQ(h2.lookup("rv-key"), first);
+    EXPECT_EQ(h2.lookup("rv-key").value(), first);
 }
 
 TEST(RendezvousTest, ThrowsWhenEmpty) {
     RendezvousHasher<> h;
-    EXPECT_THROW(h.lookup("key"), std::runtime_error);
+    EXPECT_THROW(h.lookup_or_throw("key"), std::runtime_error);
+}
+
+TEST(RendezvousTest, LookupReturnsNulloptWhenEmpty) {
+    RendezvousHasher<> h;
+    EXPECT_FALSE(h.lookup("key").has_value());
 }
 
 TEST(RendezvousTest, RemoveNode) {
@@ -47,7 +53,7 @@ TEST(RendezvousTest, RemoveNode) {
     EXPECT_FALSE(h.has_node("n1"));
     EXPECT_EQ(h.node_count(), 1u);
     for (int i = 0; i < 50; ++i) {
-        EXPECT_EQ(h.lookup("k" + std::to_string(i)), "n2");
+        EXPECT_EQ(h.lookup("k" + std::to_string(i)).value(), "n2");
     }
 }
 

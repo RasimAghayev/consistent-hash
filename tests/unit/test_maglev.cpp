@@ -16,9 +16,10 @@ TEST(MaglevTest, LookupReturnsValidNode) {
     }
     std::set<std::string> seen;
     for (int i = 0; i < 500; ++i) {
-        std::string owner = h.lookup("key:" + std::to_string(i));
-        EXPECT_TRUE(owner.rfind("n", 0) == 0);
-        seen.insert(owner);
+        auto opt = h.lookup("key:" + std::to_string(i));
+        EXPECT_TRUE(opt.has_value());
+        EXPECT_TRUE(opt.value().rfind("n", 0) == 0);
+        seen.insert(opt.value());
     }
     EXPECT_EQ(seen.size(), 6u);
 }
@@ -28,17 +29,22 @@ TEST(MaglevTest, Deterministic) {
     h.add_node({"a", "", 100, "", NodeStatus::Active, {}});
     h.add_node({"b", "", 100, "", NodeStatus::Active, {}});
     h.add_node({"c", "", 100, "", NodeStatus::Active, {}});
-    std::string first = h.lookup("stable-key");
+    std::string first = h.lookup("stable-key").value();
     MaglevHasher<> h2(97);
     h2.add_node({"a", "", 100, "", NodeStatus::Active, {}});
     h2.add_node({"b", "", 100, "", NodeStatus::Active, {}});
     h2.add_node({"c", "", 100, "", NodeStatus::Active, {}});
-    EXPECT_EQ(h2.lookup("stable-key"), first);
+    EXPECT_EQ(h2.lookup("stable-key").value(), first);
 }
 
 TEST(MaglevTest, ThrowsWhenEmpty) {
     MaglevHasher<> h(97);
-    EXPECT_THROW(h.lookup("key"), std::runtime_error);
+    EXPECT_THROW(h.lookup_or_throw("key"), std::runtime_error);
+}
+
+TEST(MaglevTest, LookupReturnsNulloptWhenEmpty) {
+    MaglevHasher<> h(97);
+    EXPECT_FALSE(h.lookup("key").has_value());
 }
 
 TEST(MaglevTest, RemoveNode) {
@@ -49,7 +55,7 @@ TEST(MaglevTest, RemoveNode) {
     EXPECT_FALSE(h.has_node("n1"));
     EXPECT_EQ(h.node_count(), 1u);
     for (int i = 0; i < 50; ++i) {
-        EXPECT_EQ(h.lookup("k" + std::to_string(i)), "n2");
+        EXPECT_EQ(h.lookup("k" + std::to_string(i)).value(), "n2");
     }
 }
 
@@ -62,7 +68,9 @@ TEST(MaglevTest, DistributionSkewLow) {
     const int keys = 5000;
     std::map<std::string, int> counts;
     for (int i = 0; i < keys; ++i) {
-        counts[h.lookup("key:" + std::to_string(i))]++;
+        if (auto opt = h.lookup("key:" + std::to_string(i)); opt) {
+            counts[opt.value()]++;
+        }
     }
     double mean = static_cast<double>(keys) / N;
     double sq = 0.0;

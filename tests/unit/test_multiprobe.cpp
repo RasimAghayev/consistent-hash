@@ -16,16 +16,22 @@ TEST(MultiProbeTest, LookupReturnsValidNode) {
     }
     std::set<std::string> seen;
     for (int i = 0; i < 500; ++i) {
-        std::string owner = h.lookup("key:" + std::to_string(i));
-        EXPECT_TRUE(owner.rfind("n", 0) == 0);
-        seen.insert(owner);
+        auto opt = h.lookup("key:" + std::to_string(i));
+        EXPECT_TRUE(opt.has_value());
+        EXPECT_TRUE(opt.value().rfind("n", 0) == 0);
+        seen.insert(opt.value());
     }
     EXPECT_EQ(seen.size(), 6u);
 }
 
 TEST(MultiProbeTest, ThrowsWhenEmpty) {
     MultiProbeHasher<> h;
-    EXPECT_THROW(h.lookup("key"), std::runtime_error);
+    EXPECT_THROW(h.lookup_or_throw("key"), std::runtime_error);
+}
+
+TEST(MultiProbeTest, LookupReturnsNulloptWhenEmpty) {
+    MultiProbeHasher<> h;
+    EXPECT_FALSE(h.lookup("key").has_value());
 }
 
 TEST(MultiProbeTest, RemoveNode) {
@@ -36,7 +42,7 @@ TEST(MultiProbeTest, RemoveNode) {
     EXPECT_FALSE(h.has_node("n1"));
     EXPECT_EQ(h.node_count(), 1u);
     for (int i = 0; i < 50; ++i) {
-        EXPECT_EQ(h.lookup("k" + std::to_string(i)), "n2");
+        EXPECT_EQ(h.lookup("k" + std::to_string(i)).value(), "n2");
     }
 }
 
@@ -66,6 +72,7 @@ TEST(MultiProbeTest, CustomProbeCount) {
     MultiProbeHasher<> h(4);
     h.add_node({"n1", "", 100, "", NodeStatus::Active, {}});
     h.add_node({"n2", "", 100, "", NodeStatus::Active, {}});
-    std::string owner = h.lookup("key");
-    EXPECT_TRUE(owner == "n1" || owner == "n2");
+    auto opt = h.lookup("key");
+    EXPECT_TRUE(opt.has_value());
+    EXPECT_TRUE(opt.value() == "n1" || opt.value() == "n2");
 }

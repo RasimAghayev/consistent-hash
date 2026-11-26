@@ -3,10 +3,13 @@
 #include <cstddef>
 #include <cmath>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "consistent_hash/concepts.hpp"
 #include "consistent_hash/hash.hpp"
 #include "consistent_hash/types.hpp"
 
@@ -14,11 +17,30 @@ namespace consistent_hash {
 
 // Abstract interface for every consistent hashing algorithm.
 // NodeId and Key default to std::string but may be any copyable, hashable type.
-template <typename NodeId = std::string, typename Key = std::string>
+template <NodeIdType NodeId = std::string, KeyType Key = std::string,
+          KeyHasher<Key> Hasher = DefaultHasher<Key>>
 class ConsistentHasher {
 public:
+    // Error codes for operations that can fail.
+    enum class ErrorCode {
+        None = 0,
+        EmptyRing,
+        NoActiveNodes,
+        NodeNotFound,
+        InvalidWeight,
+        InvalidArgument
+    };
+
+    struct Result {
+        ErrorCode code = ErrorCode::None;
+        std::string message;
+
+        explicit operator bool() const noexcept { return code == ErrorCode::None; }
+    };
+
     using node_id_type = NodeId;
     using key_type = Key;
+    using hasher_type = Hasher;
     using NodeType = Node<NodeId>;
     using MigrationType = Migration<NodeId, Key>;
     using StatsType = DistributionStats<NodeId, Key>;
@@ -27,19 +49,35 @@ public:
 
     // Add a node (thread-safe). Weight scales virtual-node count where applicable.
     virtual void add_node(const NodeType& node) = 0;
+    // Add or update a node (thread-safe). Returns true if new, false if updated.
+    virtual bool upsert_node(const NodeType& node) = 0;
     // Remove a node by id (thread-safe).
     virtual void remove_node(const NodeId& id) = 0;
+    // Update node weight without removal (thread-safe).
+    virtual Result update_weight(const NodeId& id, uint32_t weight) = 0;
     virtual bool has_node(const NodeId& id) const = 0;
-    // Owner node for a key (thread-safe). Throws std::runtime_error when empty.
-    virtual NodeId lookup(const Key& key) const = 0;
+
+    // Owner node for a key (thread-safe). Returns nullopt when empty/no active nodes.
+    virtual std::optional<NodeId> lookup(const Key& key) const = 0;
+    // Owner node for a key (thread-safe). Throws on error (legacy compatibility).
+    virtual NodeId lookup_or_throw(const Key& key) const = 0;
     // Up to n distinct owner nodes for a key.
     virtual std::vector<NodeId> lookup_n(const Key& key, size_t n) const = 0;
+    // Bulk lookup for multiple keys (efficient for batch operations).
+    virtual std::vector<std::optional<NodeId>> lookup_bulk(
+        const std::vector<Key>& keys) const = 0;
+
     // Recompute key->node assignments vs. the last snapshot; return migrations.
     virtual std::vector<MigrationType> rebalance() = 0;
     // Distribution + latency + migration metrics.
     virtual StatsType stats() const = 0;
     virtual size_t node_count() const = 0;
     virtual void clear() = 0;
+
+    // Serialize current state for persistence.
+    virtual std::string serialize() const = 0;
+    // Deserialize and restore state.
+    virtual Result deserialize(std::string_view data) = 0;
 };
 
 // Distribution of keys across nodes for a hasher instance.
@@ -51,7 +89,9 @@ typename Hasher::StatsType measure_distribution(const Hasher& hasher,
 
     std::map<NodeId, size_t> counts;
     for (const auto& k : keys) {
-        counts[hasher.lookup(k)]++;
+        if (auto opt = hasher.lookup(k); opt) {
+            counts[*opt]++;
+        }
     }
 
     const size_t total = keys.size();
@@ -81,6 +121,35 @@ typename Hasher::StatsType measure_distribution(const Hasher& hasher,
     s.max_load = mx;
     s.min_load = mn;
     return s;
+}
+
+// Compute per-node load for a set of keys.
+template <typename Hasher, typename Key>
+std::map<typename Hasher::node_id_type, size_t> compute_loads(
+    const Hasher& hasher, const std::vector<Key>& keys) {
+    using NodeId = typename Hasher::node_id_type;
+    std::map<NodeId, size_t> loads;
+    for (const auto& k : keys) {
+        if (auto opt = hasher.lookup(k); opt) {
+            loads[*opt]++;
+        }
+    }
+    return loads;
+}
+
+// Find the most/least loaded nodes.
+template <typename Hasher, typename Key>
+std::pair<typename Hasher::node_id_type, typename Hasher::node_id_type>
+find_load_extremes(const Hasher& hasher, const std::vector<Key>& keys) {
+    using NodeId = typename Hasher::node_id_type;
+    auto loads = compute_loads(hasher, keys);
+    if (loads.empty()) return {NodeId{}, NodeId{}};
+
+    auto [min_it, max_it] = std::minmax_element(
+        loads.begin(), loads.end(),
+        [](const auto& a, const auto& b) { return a.second < b.second; });
+
+    return {min_it->first, max_it->first};
 }
 
 }  // namespace consistent_hash

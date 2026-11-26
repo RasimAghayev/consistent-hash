@@ -16,9 +16,10 @@ TEST(JumpTest, LookupReturnsValidNode) {
     }
     std::set<std::string> seen;
     for (int i = 0; i < 1000; ++i) {
-        std::string owner = h.lookup("key:" + std::to_string(i));
-        EXPECT_TRUE(owner.rfind("n", 0) == 0);
-        seen.insert(owner);
+        auto opt = h.lookup("key:" + std::to_string(i));
+        EXPECT_TRUE(opt.has_value());
+        EXPECT_TRUE(opt.value().rfind("n", 0) == 0);
+        seen.insert(opt.value());
     }
     EXPECT_EQ(seen.size(), 10u);
 }
@@ -28,17 +29,22 @@ TEST(JumpTest, Deterministic) {
     h.add_node({"a", "", 100, "", NodeStatus::Active, {}});
     h.add_node({"b", "", 100, "", NodeStatus::Active, {}});
     h.add_node({"c", "", 100, "", NodeStatus::Active, {}});
-    std::string first = h.lookup("stable-key");
+    std::string first = h.lookup("stable-key").value();
     JumpHasher<> h2;
     h2.add_node({"a", "", 100, "", NodeStatus::Active, {}});
     h2.add_node({"b", "", 100, "", NodeStatus::Active, {}});
     h2.add_node({"c", "", 100, "", NodeStatus::Active, {}});
-    EXPECT_EQ(h2.lookup("stable-key"), first);
+    EXPECT_EQ(h2.lookup("stable-key").value(), first);
 }
 
 TEST(JumpTest, ThrowsWhenEmpty) {
     JumpHasher<> h;
-    EXPECT_THROW(h.lookup("key"), std::runtime_error);
+    EXPECT_THROW(h.lookup_or_throw("key"), std::runtime_error);
+}
+
+TEST(JumpTest, LookupReturnsNulloptWhenEmpty) {
+    JumpHasher<> h;
+    EXPECT_FALSE(h.lookup("key").has_value());
 }
 
 TEST(JumpTest, RemoveNode) {
@@ -49,7 +55,7 @@ TEST(JumpTest, RemoveNode) {
     EXPECT_FALSE(h.has_node("n1"));
     EXPECT_EQ(h.node_count(), 1u);
     for (int i = 0; i < 50; ++i) {
-        EXPECT_EQ(h.lookup("k" + std::to_string(i)), "n2");
+        EXPECT_EQ(h.lookup("k" + std::to_string(i)).value(), "n2");
     }
 }
 

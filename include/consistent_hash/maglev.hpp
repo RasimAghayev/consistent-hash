@@ -5,10 +5,12 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "consistent_hash/consistent_hash.hpp"
@@ -19,19 +21,23 @@ namespace consistent_hash {
 
 // Maglev consistent hashing. Fixed-size lookup table (default M = 65537,
 // prime). O(1) lookup, O(M * n) table build. Best for load balancers.
-template <typename NodeId = std::string, typename Key = std::string>
-class MaglevHasher : public ConsistentHasher<NodeId, Key> {
+template <NodeIdType NodeId = std::string, KeyType Key = std::string,
+          KeyHasher<Key> Hasher = DefaultHasher<Key>>
+class MaglevHasher : public ConsistentHasher<NodeId, Key, Hasher> {
 public:
-    using Base = ConsistentHasher<NodeId, Key>;
+    using Base = ConsistentHasher<NodeId, Key, Hasher>;
     using NodeType = typename Base::NodeType;
     using MigrationType = typename Base::MigrationType;
     using StatsType = typename Base::StatsType;
+    using Result = typename Base::Result;
+    using ErrorCode = typename Base::ErrorCode;
 
     static constexpr size_t kDefaultTableSize = 65537;
 
     explicit MaglevHasher(size_t table_size = kDefaultTableSize)
         : table_size_(table_size == 0 ? kDefaultTableSize : table_size),
-          empty_slot_(std::numeric_limits<size_t>::max()) {
+          empty_slot_(std::numeric_limits<size_t>::max()),
+          hasher_{} {
         probe_keys_.reserve(1000);
         for (size_t i = 0; i < 1000; ++i) {
             probe_keys_.push_back(Key("probe:" + std::to_string(i)));
@@ -52,6 +58,20 @@ public:
         rebuild_table_locked();
     }
 
+    bool upsert_node(const NodeType& node) override {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        auto it = index_by_id_.find(node.id);
+        if (it != index_by_id_.end()) {
+            nodes_[it->second] = node;
+            rebuild_table_locked();
+            return false;
+        }
+        index_by_id_[node.id] = nodes_.size();
+        nodes_.push_back(node);
+        rebuild_table_locked();
+        return true;
+    }
+
     void remove_node(const NodeId& id) override {
         std::unique_lock<std::shared_mutex> lock(mutex_);
         auto it = index_by_id_.find(id);
@@ -67,14 +87,36 @@ public:
         rebuild_table_locked();
     }
 
+    Result update_weight(const NodeId& id, uint32_t weight) override {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        auto it = index_by_id_.find(id);
+        if (it == index_by_id_.end()) {
+            return Result{ErrorCode::NodeNotFound, "Node not found: " + id};
+        }
+        if (weight == 0 || weight > 1000) {
+            return Result{ErrorCode::InvalidWeight, "Weight must be 1..1000"};
+        }
+        nodes_[it->second].weight = weight;
+        rebuild_table_locked();
+        return Result{};
+    }
+
     bool has_node(const NodeId& id) const override {
         std::shared_lock<std::shared_mutex> lock(mutex_);
         return index_by_id_.find(id) != index_by_id_.end();
     }
 
-    NodeId lookup(const Key& key) const override {
+    std::optional<NodeId> lookup(const Key& key) const override {
         std::shared_lock<std::shared_mutex> lock(mutex_);
-        return lookup_unlocked(key);
+        return lookup_opt_unlocked(key);
+    }
+
+    NodeId lookup_or_throw(const Key& key) const override {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        if (auto opt = lookup_opt_unlocked(key); opt) {
+            return *opt;
+        }
+        throw std::runtime_error("MaglevHasher: no active nodes");
     }
 
     std::vector<NodeId> lookup_n(const Key& key, size_t n) const override {
@@ -100,6 +142,17 @@ public:
         return result;
     }
 
+    std::vector<std::optional<NodeId>> lookup_bulk(
+        const std::vector<Key>& keys) const override {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        std::vector<std::optional<NodeId>> results;
+        results.reserve(keys.size());
+        for (const auto& k : keys) {
+            results.push_back(lookup_opt_unlocked(k));
+        }
+        return results;
+    }
+
     std::vector<MigrationType> rebalance() override {
         std::unique_lock<std::shared_mutex> lock(mutex_);
         return rebalance_locked();
@@ -122,6 +175,33 @@ public:
         table_.assign(table_size_, empty_slot_);
         last_assignment_.clear();
         metrics_.clear();
+    }
+
+    std::string serialize() const override {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        std::string result = "{";
+        result += "\"table_size\":" + std::to_string(table_size_) + ",";
+        result += "\"nodes\":[";
+        bool first = true;
+        for (size_t i = 0; i < nodes_.size(); ++i) {
+            if (!first) result += ",";
+            first = false;
+            const auto& node = nodes_[i];
+            result += "{\"id\":\"" + node.id + "\",";
+            result += "\"address\":\"" + node.address + "\",";
+            result += "\"weight\":" + std::to_string(node.weight) + ",";
+            result += "\"zone\":\"" + node.zone + "\",";
+            result += "\"status\":" + std::to_string(static_cast<int>(node.status)) + "}";
+        }
+        result += "]}";
+        return result;
+    }
+
+    Result deserialize([[maybe_unused]] std::string_view data) override {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        clear();
+        return Result{ErrorCode::InvalidArgument,
+                      "Deserialization not fully implemented; use JSON library"};
     }
 
 private:
@@ -153,7 +233,9 @@ private:
         migrations.reserve(probe_keys_.size());
         std::map<Key, NodeId> current;
         for (const auto& k : probe_keys_) {
-            try { current[k] = lookup_unlocked(k); } catch (...) {}
+            if (auto opt = lookup_opt_unlocked(k); opt) {
+                current[k] = *opt;
+            }
         }
         for (const auto& [k, node] : current) {
             auto pit = last_assignment_.find(k);
@@ -168,8 +250,8 @@ private:
     }
 
     // Caller must hold the mutex.
-    NodeId lookup_unlocked(const Key& k) const {
-        if (nodes_.empty()) throw std::runtime_error("empty");
+    std::optional<NodeId> lookup_opt_unlocked(const Key& k) const {
+        if (nodes_.empty()) return std::nullopt;
         const size_t start = static_cast<size_t>(hasher_(k) % table_size_);
         size_t idx = start;
         for (size_t i = 0; i < table_size_; ++i) {
@@ -179,14 +261,18 @@ private:
             }
             idx = (idx + 1) % table_size_;
         }
-        throw std::runtime_error("no active nodes");
+        return std::nullopt;
     }
 
     StatsType compute_stats_locked() const {
         StatsType s;
-        s.migration_count = metrics_.migration_count();
-        s.avg_lookup_ns = metrics_.avg_lookup_ns();
-        s.p99_lookup_ns = metrics_.p99_lookup_ns();
+        auto snap = metrics_.snapshot();
+        s.migration_count = snap.migration_count;
+        s.avg_lookup_ns = snap.avg_lookup_ns;
+        s.p50_lookup_ns = snap.p50_lookup_ns;
+        s.p90_lookup_ns = snap.p90_lookup_ns;
+        s.p99_lookup_ns = snap.p99_lookup_ns;
+        s.p999_lookup_ns = snap.p999_lookup_ns;
         if (nodes_.empty()) return s;
         try {
             auto dist = measure_distribution(*this, probe_keys_);
@@ -210,7 +296,7 @@ private:
     std::vector<Key> probe_keys_;
     Metrics metrics_;
     mutable std::shared_mutex mutex_;
-    DefaultHasher<Key> hasher_;
+    Hasher hasher_;
 };
 
 }  // namespace consistent_hash

@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -11,8 +12,8 @@ using namespace consistent_hash;
 TEST(RingTest, SingleNodeLookup) {
     RingHasher<> h;
     h.add_node({"n1", "10.0.0.1:8080", 100, "", NodeStatus::Active, {}});
-    EXPECT_EQ(h.lookup("key:1"), "n1");
-    EXPECT_EQ(h.lookup("key:2"), "n1");
+    EXPECT_EQ(h.lookup("key:1").value(), "n1");
+    EXPECT_EQ(h.lookup("key:2").value(), "n1");
     EXPECT_EQ(h.node_count(), 1);
     EXPECT_TRUE(h.has_node("n1"));
     EXPECT_FALSE(h.has_node("n2"));
@@ -20,7 +21,12 @@ TEST(RingTest, SingleNodeLookup) {
 
 TEST(RingTest, LookupThrowsWhenEmpty) {
     RingHasher<> h;
-    EXPECT_THROW(h.lookup("key"), std::runtime_error);
+    EXPECT_THROW(h.lookup_or_throw("key"), std::runtime_error);
+}
+
+TEST(RingTest, LookupReturnsNulloptWhenEmpty) {
+    RingHasher<> h;
+    EXPECT_FALSE(h.lookup("key").has_value());
 }
 
 TEST(RingTest, RemoveNode) {
@@ -33,7 +39,7 @@ TEST(RingTest, RemoveNode) {
     EXPECT_EQ(h.node_count(), 1);
     // All remaining keys map to n2.
     for (int i = 0; i < 100; ++i) {
-        EXPECT_EQ(h.lookup("k" + std::to_string(i)), "n2");
+        EXPECT_EQ(h.lookup("k" + std::to_string(i)).value(), "n2");
     }
 }
 
@@ -59,7 +65,9 @@ TEST(RingTest, DistributionSkewLow) {
     const int keys = 10000;
     std::map<std::string, int> counts;
     for (int i = 0; i < keys; ++i) {
-        counts[h.lookup("key:" + std::to_string(i))]++;
+        if (auto opt = h.lookup("key:" + std::to_string(i)); opt) {
+            counts[*opt]++;
+        }
     }
     double mean = static_cast<double>(keys) / N;
     double sq = 0.0;
@@ -84,7 +92,9 @@ TEST(RingTest, RebalanceMovesFraction) {
     const int keys = 200;
     std::map<std::string, std::string> before;
     for (int i = 0; i < keys; ++i) {
-        before["k" + std::to_string(i)] = h.lookup("k" + std::to_string(i));
+        if (auto opt = h.lookup("k" + std::to_string(i)); opt) {
+            before["k" + std::to_string(i)] = *opt;
+        }
     }
 
     h.add_node({"n3", "10.0.0.3:8080", 100, "", NodeStatus::Active, {}});
@@ -93,7 +103,7 @@ TEST(RingTest, RebalanceMovesFraction) {
 
     size_t moved = 0;
     for (const auto& [k, b] : before) {
-        if (h.lookup(k) != b) ++moved;
+        if (h.lookup(k).value() != b) ++moved;
     }
     // Adding one node to two should move only a fraction of keys.
     EXPECT_LT(static_cast<double>(moved) / keys, 0.5);
