@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for consistent_hash
 # Stage 1: Build stage with full toolchain
-FROM gcc:13 AS builder
+FROM gcc:16 AS builder
 
 # Install CMake and Ninja
 RUN apt-get update && apt-get install -y --no-install-recommends \
