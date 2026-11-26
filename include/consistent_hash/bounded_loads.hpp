@@ -66,7 +66,7 @@ public:
     return ring_.update_weight(id, weight);
   }
 
-  bool has_node(const NodeId &id) const override {
+  bool has_node(const NodeId &id) const noexcept override {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     return ring_.has_node(id);
   }
@@ -105,17 +105,17 @@ public:
     return ring_.rebalance();
   }
 
-  StatsType stats() const override {
+  StatsType stats() const noexcept override {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     return ring_.stats();
   }
 
-  size_t node_count() const override {
+  size_t node_count() const noexcept override {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     return ring_.node_count();
   }
 
-  void clear() override {
+  void clear() noexcept override {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     ring_.clear();
     capacities_.clear();

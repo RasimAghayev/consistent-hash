@@ -56,7 +56,7 @@ public:
   virtual void remove_node(const NodeId &id) = 0;
   // Update node weight without removal (thread-safe).
   virtual Result update_weight(const NodeId &id, uint32_t weight) = 0;
-  virtual bool has_node(const NodeId &id) const = 0;
+  virtual bool has_node(const NodeId &id) const noexcept = 0;
 
   // Owner node for a key (thread-safe). Returns nullopt when empty/no active
   // nodes.
@@ -72,15 +72,47 @@ public:
   // Recompute key->node assignments vs. the last snapshot; return migrations.
   virtual std::vector<MigrationType> rebalance() = 0;
   // Distribution + latency + migration metrics.
-  virtual StatsType stats() const = 0;
-  virtual size_t node_count() const = 0;
-  virtual void clear() = 0;
+  virtual StatsType stats() const noexcept = 0;
+  virtual size_t node_count() const noexcept = 0;
+  virtual void clear() noexcept = 0;
 
   // Serialize current state for persistence.
   virtual std::string serialize() const = 0;
   // Deserialize and restore state.
   virtual Result deserialize(std::string_view data) = 0;
 };
+
+// C++23 monadic operations for std::optional<NodeId>.
+// These provide functional composition for chaining optional operations.
+
+// and_then: chain a function that returns optional<NodeId>
+template <typename NodeId, typename F>
+requires std::invocable<F, NodeId>
+auto and_then(std::optional<NodeId> opt, F &&f) {
+  if (opt)
+    return std::invoke(std::forward<F>(f), *opt);
+  using ResultType = std::invoke_result_t<F, NodeId>;
+  return std::optional<ResultType>{};
+}
+
+// transform: apply a function to the contained value
+template <typename NodeId, typename F>
+requires std::invocable<F, NodeId>
+auto transform(std::optional<NodeId> opt, F &&f) {
+  if (opt)
+    return std::optional<std::invoke_result_t<F, NodeId>>{
+        std::invoke(std::forward<F>(f), *opt)};
+  return std::optional<std::invoke_result_t<F, NodeId>>{};
+}
+
+// or_else: provide fallback when optional is empty
+template <typename NodeId, typename F>
+requires std::invocable<F>
+auto or_else(std::optional<NodeId> opt, F &&f) {
+  if (opt)
+    return opt;
+  return std::invoke(std::forward<F>(f));
+}
 
 // Distribution of keys across nodes for a hasher instance.
 template <typename Hasher, typename Key>
@@ -133,10 +165,77 @@ typename Hasher::StatsType measure_distribution(const Hasher &hasher,
   return s;
 }
 
+// Range-based measure_distribution (C++23 views compatible).
+template <typename Hasher, RangeCompatible Range>
+requires KeyType<std::ranges::range_value_t<Range>>
+typename Hasher::StatsType measure_distribution_range(const Hasher &hasher,
+                                                      const Range &keys) {
+  using NodeId = typename Hasher::node_id_type;
+  using Stats = typename Hasher::StatsType;
+
+  std::map<NodeId, size_t> counts;
+  for (const auto &k : keys) {
+    if (auto opt = hasher.lookup(k); opt) {
+      counts[*opt]++;
+    }
+  }
+
+  const size_t total = std::ranges::distance(keys);
+  const size_t nodes_used = counts.size();
+  const size_t divisor = nodes_used == 0 ? 1 : nodes_used;
+  const double mean = static_cast<double>(total) / static_cast<double>(divisor);
+
+  double sq = 0.0;
+  double mn = 0.0;
+  double mx = 0.0;
+  bool first = true;
+  for (const auto &[node, c] : counts) {
+    const double v = static_cast<double>(c);
+    const double d = v - mean;
+    sq += d * d;
+    if (first) {
+      mn = v;
+      mx = v;
+      first = false;
+    } else {
+      if (v < mn)
+        mn = v;
+      if (v > mx)
+        mx = v;
+    }
+  }
+
+  Stats s;
+  s.total_keys = total;
+  s.unique_nodes_used = nodes_used;
+  s.mean_keys_per_node = mean;
+  s.stddev_keys_per_node =
+      nodes_used == 0 ? 0.0 : std::sqrt(sq / static_cast<double>(divisor));
+  s.skew = mean > 0.0 ? s.stddev_keys_per_node / mean : 0.0;
+  s.max_load = mx;
+  s.min_load = mn;
+  return s;
+}
+
 // Compute per-node load for a set of keys.
 template <typename Hasher, typename Key>
 std::map<typename Hasher::node_id_type, size_t>
 compute_loads(const Hasher &hasher, const std::vector<Key> &keys) {
+  using NodeId = typename Hasher::node_id_type;
+  std::map<NodeId, size_t> loads;
+  for (const auto &k : keys) {
+    if (auto opt = hasher.lookup(k); opt) {
+      loads[*opt]++;
+    }
+  }
+  return loads;
+}
+
+// Range-based compute_loads.
+template <typename Hasher, RangeCompatible Range>
+requires KeyType<std::ranges::range_value_t<Range>>
+    std::map<typename Hasher::node_id_type, size_t>
+    compute_loads_range(const Hasher &hasher, const Range &keys) {
   using NodeId = typename Hasher::node_id_type;
   std::map<NodeId, size_t> loads;
   for (const auto &k : keys) {
@@ -153,6 +252,23 @@ std::pair<typename Hasher::node_id_type, typename Hasher::node_id_type>
 find_load_extremes(const Hasher &hasher, const std::vector<Key> &keys) {
   using NodeId = typename Hasher::node_id_type;
   auto loads = compute_loads(hasher, keys);
+  if (loads.empty())
+    return {NodeId{}, NodeId{}};
+
+  auto [min_it, max_it] = std::minmax_element(
+      loads.begin(), loads.end(),
+      [](const auto &a, const auto &b) { return a.second < b.second; });
+
+  return {min_it->first, max_it->first};
+}
+
+// Range-based find_load_extremes.
+template <typename Hasher, RangeCompatible Range>
+requires KeyType<std::ranges::range_value_t<Range>>
+    std::pair<typename Hasher::node_id_type, typename Hasher::node_id_type>
+    find_load_extremes_range(const Hasher &hasher, const Range &keys) {
+  using NodeId = typename Hasher::node_id_type;
+  auto loads = compute_loads_range(hasher, keys);
   if (loads.empty())
     return {NodeId{}, NodeId{}};
 

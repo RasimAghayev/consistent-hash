@@ -61,10 +61,27 @@ private:
   size_t max_samples_;
 };
 
-// Records lookup latencies and migration counts for observability.
+// Hash quality metrics for avalanche effect and collision analysis.
+struct HashQualityMetrics {
+  double avalanche_effect =
+      0.0; // Fraction of bits flipped per input bit (ideal ~0.5)
+  double collision_rate = 0.0; // Observed collision rate
+  double bias_score = 0.0;     // Distribution bias (0 = uniform)
+  size_t sample_count = 0;
+  uint64_t total_collisions = 0;
+
+  [[nodiscard]] bool good() const noexcept {
+    return avalanche_effect > 0.45 && avalanche_effect < 0.55 &&
+           collision_rate < 0.01;
+  }
+};
+
+// Records lookup latencies, migration counts, and hash quality for
+// observability.
 class Metrics {
 public:
-  explicit Metrics(size_t max_samples = 10000) : latencies_(max_samples) {}
+  explicit Metrics(size_t max_samples = 10000)
+      : latencies_(max_samples), hash_quality_samples_(1000) {}
 
   void record_lookup(std::chrono::nanoseconds duration) {
     latencies_.record(static_cast<double>(duration.count()));
@@ -73,6 +90,15 @@ public:
   void record_migrations(uint64_t count) {
     std::lock_guard<std::mutex> lock(mutex_);
     migration_count_ += count;
+  }
+
+  // Record hash quality sample (for avalanche/collision analysis).
+  void record_hash_quality(uint64_t hash1, uint64_t hash2, bool collision) {
+    std::lock_guard<std::mutex> lock(quality_mutex_);
+    if (hash_quality_samples_.size() >= 1000) {
+      hash_quality_samples_.erase(hash_quality_samples_.begin());
+    }
+    hash_quality_samples_.push_back({hash1, hash2, collision});
   }
 
   uint64_t migration_count() const {
@@ -86,6 +112,39 @@ public:
   double p99_lookup_ns() const { return latencies_.percentile(0.99); }
   double p999_lookup_ns() const { return latencies_.percentile(0.999); }
 
+  // Compute hash quality metrics from recorded samples.
+  HashQualityMetrics compute_hash_quality() const {
+    std::lock_guard<std::mutex> lock(quality_mutex_);
+    HashQualityMetrics qm;
+    qm.sample_count = hash_quality_samples_.size();
+    if (qm.sample_count == 0)
+      return qm;
+
+    uint64_t collisions = 0;
+    double total_bit_diff = 0.0;
+    for (const auto &s : hash_quality_samples_) {
+      if (s.collision)
+        collisions++;
+      // Compute Hamming distance (bits different) between hash1 and hash2
+      uint64_t diff = s.hash1 ^ s.hash2;
+      total_bit_diff += static_cast<double>(__builtin_popcountll(diff));
+    }
+    qm.total_collisions = collisions;
+    qm.collision_rate = static_cast<double>(collisions) / qm.sample_count;
+    // Avalanche effect: average fraction of 64 bits that differ per sample
+    // Ideal is 32/64 = 0.5 (each input bit flip should flip ~50% of output
+    // bits)
+    qm.avalanche_effect = total_bit_diff / (64.0 * qm.sample_count);
+
+    // Simple bias score: deviation from expected collision rate (1/2^64 for
+    // 64-bit)
+    const double expected_collision_rate =
+        1.0 / (1ULL << 32); // Birthday bound approximation
+    qm.bias_score = std::abs(qm.collision_rate - expected_collision_rate);
+
+    return qm;
+  }
+
   // Snapshot for reporting.
   struct Snapshot {
     uint64_t migration_count = 0;
@@ -95,6 +154,7 @@ public:
     double p99_lookup_ns = 0.0;
     double p999_lookup_ns = 0.0;
     size_t sample_count = 0;
+    HashQualityMetrics hash_quality;
   };
 
   Snapshot snapshot() const {
@@ -105,18 +165,29 @@ public:
                     .p90_lookup_ns = latencies_.percentile(0.90),
                     .p99_lookup_ns = latencies_.percentile(0.99),
                     .p999_lookup_ns = latencies_.percentile(0.999),
-                    .sample_count = latencies_.count()};
+                    .sample_count = latencies_.count(),
+                    .hash_quality = compute_hash_quality()};
   }
 
   void clear() {
     latencies_.clear();
     std::lock_guard<std::mutex> lock(mutex_);
     migration_count_ = 0;
+    std::lock_guard<std::mutex> qlock(quality_mutex_);
+    hash_quality_samples_.clear();
   }
 
 private:
+  struct QualitySample {
+    uint64_t hash1;
+    uint64_t hash2;
+    bool collision;
+  };
+
   mutable std::mutex mutex_;
+  mutable std::mutex quality_mutex_;
   PercentileCalculator latencies_;
+  std::vector<QualitySample> hash_quality_samples_;
   uint64_t migration_count_ = 0;
 };
 

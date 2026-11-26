@@ -66,7 +66,7 @@ public:
     return Result{};
   }
 
-  bool has_node(const NodeId &id) const override {
+  bool has_node(const NodeId &id) const noexcept override {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     return nodes_.find(id) != nodes_.end();
   }
@@ -130,17 +130,17 @@ public:
     return rebalance_locked();
   }
 
-  StatsType stats() const override {
+  StatsType stats() const noexcept override {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     return compute_stats_locked();
   }
 
-  size_t node_count() const override {
+  size_t node_count() const noexcept override {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     return nodes_.size();
   }
 
-  void clear() override {
+  void clear() noexcept override {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     nodes_.clear();
     last_assignment_.clear();

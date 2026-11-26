@@ -1,8 +1,12 @@
 #pragma once
 
 #include <concepts>
+#include <format>
 #include <map>
+#include <optional>
+#include <ranges>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 #include "consistent_hash/types.hpp"
@@ -29,6 +33,17 @@ concept KeyHasher = requires(const Hasher &h, const Key &k) {
 };
 
 template <typename T>
+concept Serializable = requires(const T &t, std::format_context &ctx) {
+  { std::format(ctx, "{}", t) } -> std::same_as<std::format_context::iterator>;
+};
+
+template <typename T>
+concept RangeCompatible = std::ranges::input_range<T> && requires(const T &r) {
+  {std::ranges::begin(r)};
+  {std::ranges::end(r)};
+};
+
+template <typename T>
 concept NodeType = requires(T n) {
   { n.id } -> std::convertible_to<typename T::id_type>;
   { n.address } -> std::convertible_to<std::string>;
@@ -36,6 +51,14 @@ concept NodeType = requires(T n) {
   { n.zone } -> std::convertible_to<std::string>;
   { n.status } -> std::convertible_to<NodeStatus>;
   { n.metadata } -> std::convertible_to<std::map<std::string, std::string>>;
+  requires Serializable<typename T::id_type>;
+};
+
+template <typename T>
+concept KeyHasherComposable = KeyHasher<T, typename T::key_type> &&
+    requires(const T &a, const T &b) {
+  { a ^ b } -> std::convertible_to<typename T::result_type>;
+  { a.compose(b) } -> std::same_as<T>;
 };
 
 } // namespace consistent_hash
