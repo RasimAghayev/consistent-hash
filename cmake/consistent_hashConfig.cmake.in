@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Dependencies are header-only or fetched via FetchContent
+# No external find_package calls needed for consumers
+
+@CMAKE_CURRENT_LIST_DIR@/consistent_hashTargets.cmake
