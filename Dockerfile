@@ -25,7 +25,7 @@ COPY benchmarks/ benchmarks/
 RUN cmake --preset release && cmake --build build/release --parallel $(nproc)
 
 # Stage 2: Runtime stage with minimal image
-FROM ubuntu:22.04 AS runtime
+FROM ubuntu:26.04 AS runtime
 
 # Install only runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
