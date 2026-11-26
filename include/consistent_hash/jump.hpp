@@ -64,9 +64,7 @@ public:
 
     NodeId lookup(const Key& key) const override {
         std::shared_lock<std::shared_mutex> lock(mutex_);
-        if (nodes_.empty()) throw std::runtime_error("JumpHasher: no nodes");
-        const size_t bucket = jump_bucket(hasher_(key), nodes_.size());
-        return nodes_[bucket].id;
+        return lookup_unlocked(key);
     }
 
     std::vector<NodeId> lookup_n(const Key& key, size_t n) const override {
@@ -127,7 +125,7 @@ private:
         migrations.reserve(probe_keys_.size());
         std::map<Key, NodeId> current;
         for (const auto& k : probe_keys_) {
-            try { current[k] = lookup_locked_unlocked(k); } catch (...) {}
+            try { current[k] = lookup_unlocked(k); } catch (...) {}
         }
         for (const auto& [k, node] : current) {
             auto pit = last_assignment_.find(k);
@@ -141,8 +139,8 @@ private:
         return migrations;
     }
 
-    NodeId lookup_locked_unlocked(const Key& k) const {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
+    // Caller must hold the mutex.
+    NodeId lookup_unlocked(const Key& k) const {
         if (nodes_.empty()) throw std::runtime_error("empty");
         return nodes_[jump_bucket(hasher_(k), nodes_.size())].id;
     }

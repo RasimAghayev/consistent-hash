@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <map>
+#include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
@@ -25,7 +26,12 @@ public:
     using MigrationType = typename Base::MigrationType;
     using StatsType = typename Base::StatsType;
 
-    RendezvousHasher() = default;
+    RendezvousHasher() {
+        probe_keys_.reserve(1000);
+        for (size_t i = 0; i < 1000; ++i) {
+            probe_keys_.push_back(Key("probe:" + std::to_string(i)));
+        }
+    }
 
     void add_node(const NodeType& node) override {
         std::unique_lock<std::shared_mutex> lock(mutex_);
@@ -59,23 +65,7 @@ public:
 
     NodeId lookup(const Key& key) const override {
         std::shared_lock<std::shared_mutex> lock(mutex_);
-        if (nodes_.empty()) throw std::runtime_error("RendezvousHasher: no nodes");
-        const uint64_t kh = hasher_(key);
-        const NodeType* best = nullptr;
-        uint64_t best_score = 0;
-        bool first = true;
-        for (const auto& node : nodes_) {
-            if (node.status != NodeStatus::Active) continue;
-            const uint64_t score = detail::hash_combine(kh,
-                detail::fnv1a_64(std::string(node.id)));
-            if (first || score > best_score) {
-                best_score = score;
-                best = &node;
-                first = false;
-            }
-        }
-        if (!best) throw std::runtime_error("RendezvousHasher: no active nodes");
-        return best->id;
+        return lookup_unlocked(key);
     }
 
     std::vector<NodeId> lookup_n(const Key& key, size_t n) const override {
@@ -92,7 +82,8 @@ public:
         for (const auto& node : nodes_) {
             if (node.status != NodeStatus::Active) continue;
             scored.push_back(Scored{node.id,
-                detail::hash_combine(kh, detail::fnv1a_64(std::string(node.id)))});
+                detail::mix64(hash_combine(kh,
+                    detail::mix64(detail::fnv1a_64(reinterpret_cast<const unsigned char*>(node.id.data()), node.id.size()))))});
         }
         std::sort(scored.begin(), scored.end(),
                   [](const Scored& a, const Scored& b) { return a.score > b.score; });
@@ -131,7 +122,7 @@ private:
         migrations.reserve(probe_keys_.size());
         std::map<Key, NodeId> current;
         for (const auto& k : probe_keys_) {
-            try { current[k] = lookup_locked_unlocked(k); } catch (...) {}
+            try { current[k] = lookup_unlocked(k); } catch (...) {}
         }
         for (const auto& [k, node] : current) {
             auto pit = last_assignment_.find(k);
@@ -145,8 +136,8 @@ private:
         return migrations;
     }
 
-    NodeId lookup_locked_unlocked(const Key& k) const {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
+    // Caller must hold the mutex.
+    NodeId lookup_unlocked(const Key& k) const {
         if (nodes_.empty()) throw std::runtime_error("empty");
         const uint64_t kh = hasher_(k);
         const NodeType* best = nullptr;
@@ -154,8 +145,8 @@ private:
         bool first = true;
         for (const auto& node : nodes_) {
             if (node.status != NodeStatus::Active) continue;
-            const uint64_t score = detail::hash_combine(kh,
-                detail::fnv1a_64(std::string(node.id)));
+            const uint64_t score = detail::mix64(hash_combine(kh,
+                detail::mix64(detail::fnv1a_64(reinterpret_cast<const unsigned char*>(node.id.data()), node.id.size()))));
             if (first || score > best_score) {
                 best_score = score; best = &node; first = false;
             }

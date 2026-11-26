@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <map>
+#include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
@@ -70,25 +72,7 @@ public:
 
     NodeId lookup(const Key& key) const override {
         std::unique_lock<std::shared_mutex> lock(mutex_);  // mutates load
-        if (nodes_.empty()) throw std::runtime_error("MultiProbeHasher: no nodes");
-        const size_t total = nodes_.size();
-        const uint64_t kh = hasher_(key);
-        size_t best_index = 0;
-        size_t best_load = std::numeric_limits<size_t>::max();
-        for (size_t p = 0; p < probes_; ++p) {
-            const size_t idx = static_cast<size_t>(
-                detail::hash_combine(kh, static_cast<uint64_t>(p)) % total);
-            const NodeId& id = nodes_[idx].id;
-            auto lit = load_.find(id);
-            const size_t l = (lit == load_.end()) ? 0 : lit->second;
-            if (l < best_load) {
-                best_load = l;
-                best_index = idx;
-            }
-        }
-        const NodeId chosen = nodes_[best_index].id;
-        load_[chosen] = best_load + 1;
-        return chosen;
+        return lookup_unlocked(key);
     }
 
     std::vector<NodeId> lookup_n(const Key& key, size_t n) const override {
@@ -106,7 +90,7 @@ public:
             bool found = false;
             for (size_t p = 0; p < probes_; ++p) {
                 const size_t idx = static_cast<size_t>(
-                    detail::hash_combine(kh,
+                    hash_combine(kh,
                         static_cast<uint64_t>(p) +
                         static_cast<uint64_t>(round) * 1000003ULL) % total);
                 const NodeId& id = nodes_[idx].id;
@@ -160,7 +144,7 @@ private:
         migrations.reserve(probe_keys_.size());
         std::map<Key, NodeId> current;
         for (const auto& k : probe_keys_) {
-            try { current[k] = lookup_locked_unlocked(k); } catch (...) {}
+            try { current[k] = lookup_unlocked(k); } catch (...) {}
         }
         for (const auto& [k, node] : current) {
             auto pit = last_assignment_.find(k);
@@ -174,8 +158,8 @@ private:
         return migrations;
     }
 
-    NodeId lookup_locked_unlocked(const Key& k) const {
-        std::unique_lock<std::shared_mutex> lock(mutex_);
+    // Caller must hold the mutex; mutates load_.
+    NodeId lookup_unlocked(const Key& k) const {
         if (nodes_.empty()) throw std::runtime_error("empty");
         const size_t total = nodes_.size();
         const uint64_t kh = hasher_(k);
@@ -183,7 +167,7 @@ private:
         size_t best_load = std::numeric_limits<size_t>::max();
         for (size_t p = 0; p < probes_; ++p) {
             const size_t idx = static_cast<size_t>(
-                detail::hash_combine(kh, static_cast<uint64_t>(p)) % total);
+                hash_combine(kh, static_cast<uint64_t>(p)) % total);
             const NodeId& id = nodes_[idx].id;
             auto lit = load_.find(id);
             const size_t l = (lit == load_.end()) ? 0 : lit->second;
@@ -216,7 +200,7 @@ private:
     size_t probes_;
     std::vector<NodeType> nodes_;
     std::map<NodeId, size_t> index_by_id_;
-    std::map<NodeId, size_t> load_;
+    mutable std::map<NodeId, size_t> load_;
     std::map<Key, NodeId> last_assignment_;
     std::vector<Key> probe_keys_;
     Metrics metrics_;

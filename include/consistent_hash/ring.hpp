@@ -36,17 +36,7 @@ public:
 
     void add_node(const NodeType& node) override {
         std::unique_lock<std::shared_mutex> lock(mutex_);
-        remove_node_locked(node.id);  // replace if re-added
-        nodes_[node.id] = node;
-        const size_t count =
-            std::max<size_t>(1, (vnodes_per_node_ * node.weight) / 100);
-        for (size_t i = 0; i < count; ++i) {
-            const std::string vkey = std::string(node.id) + "|" +
-                                     std::to_string(i);
-            ring_.push_back(Entry{detail::fnv1a_64(vkey), node.id});
-        }
-        std::sort(ring_.begin(), ring_.end(),
-                  [](const Entry& a, const Entry& b) { return a.hash < b.hash; });
+        add_node_unlocked(node);
     }
 
     void remove_node(const NodeId& id) override {
@@ -61,22 +51,22 @@ public:
 
     NodeId lookup(const Key& key) const override {
         std::shared_lock<std::shared_mutex> lock(mutex_);
-        return lookup_locked(key);
+        return lookup_unlocked(key);
     }
 
     std::vector<NodeId> lookup_n(const Key& key, size_t n) const override {
         std::shared_lock<std::shared_mutex> lock(mutex_);
-        return lookup_n_locked(key, n);
+        return lookup_n_unlocked(key, n);
     }
 
     std::vector<MigrationType> rebalance() override {
         std::unique_lock<std::shared_mutex> lock(mutex_);
-        return rebalance_locked();
+        return rebalance_unlocked();
     }
 
     StatsType stats() const override {
         std::shared_lock<std::shared_mutex> lock(mutex_);
-        return compute_stats_locked();
+        return compute_stats_unlocked();
     }
 
     size_t node_count() const override {
@@ -93,7 +83,10 @@ public:
     }
 
     // Zone-aware: when set, lookup prefers a node in this zone.
-    void preferred_zone(const std::string& zone) { preferred_zone_ = zone; }
+    void preferred_zone(const std::string& zone) {
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        preferred_zone_ = zone;
+    }
 
 private:
     struct Entry {
@@ -101,7 +94,32 @@ private:
         NodeId id;
     };
 
-    NodeId lookup_locked(const Key& key) const {
+    // Caller must hold the mutex.
+    void add_node_unlocked(const NodeType& node) {
+        remove_node_locked(node.id);  // replace if re-added
+        nodes_[node.id] = node;
+        const size_t count =
+            std::max<size_t>(1, (vnodes_per_node_ * node.weight) / 100);
+        const uint64_t base = detail::fnv1a_64(node.id);
+        uint64_t vh = base;
+        for (size_t i = 0; i < count; ++i) {
+            vh = hash_combine(vh, static_cast<uint64_t>(i));
+            ring_.push_back(Entry{vh, node.id});
+        }
+        std::sort(ring_.begin(), ring_.end(),
+                  [](const Entry& a, const Entry& b) { return a.hash < b.hash; });
+    }
+
+    // Caller must hold the mutex.
+    void remove_node_locked(const NodeId& id) {
+        nodes_.erase(id);
+        ring_.erase(std::remove_if(ring_.begin(), ring_.end(),
+                                   [&id](const Entry& e) { return e.id == id; }),
+                    ring_.end());
+    }
+
+    // Caller must hold the mutex.
+    NodeId lookup_unlocked(const Key& key) const {
         if (ring_.empty()) {
             throw std::runtime_error("RingHasher: no nodes available");
         }
@@ -120,7 +138,6 @@ private:
                 auto nit = nodes_.find(e.id);
                 if (nit != nodes_.end() && nit->second.zone == preferred_zone_ &&
                     nit->second.status == NodeStatus::Active) {
-                    record_lookup_locked();
                     return e.id;
                 }
             }
@@ -132,14 +149,14 @@ private:
             const Entry& e = ring_[(start + i) % m];
             auto nit = nodes_.find(e.id);
             if (nit != nodes_.end() && nit->second.status == NodeStatus::Active) {
-                record_lookup_locked();
                 return e.id;
             }
         }
         throw std::runtime_error("RingHasher: no active nodes available");
     }
 
-    std::vector<NodeId> lookup_n_locked(const Key& key, size_t n) const {
+    // Caller must hold the mutex.
+    std::vector<NodeId> lookup_n_unlocked(const Key& key, size_t n) const {
         std::vector<NodeId> result;
         if (ring_.empty() || n == 0) return result;
         const size_t total = nodes_.size();
@@ -162,24 +179,17 @@ private:
                 result.push_back(e.id);
             }
         }
-        record_lookup_locked();
         return result;
     }
 
-    void remove_node_locked(const NodeId& id) {
-        nodes_.erase(id);
-        ring_.erase(std::remove_if(ring_.begin(), ring_.end(),
-                                   [&id](const Entry& e) { return e.id == id; }),
-                    ring_.end());
-    }
-
-    std::vector<MigrationType> rebalance_locked() {
+    // Caller must hold the mutex.
+    std::vector<MigrationType> rebalance_unlocked() {
         std::vector<MigrationType> migrations;
         migrations.reserve(probe_keys_.size());
         std::map<Key, NodeId> current;
         for (const auto& k : probe_keys_) {
             try {
-                current[k] = lookup_locked(k);
+                current[k] = lookup_unlocked(k);
             } catch (...) {
                 continue;
             }
@@ -196,7 +206,7 @@ private:
         return migrations;
     }
 
-    StatsType compute_stats_locked() const {
+    StatsType compute_stats_unlocked() const {
         StatsType s;
         s.migration_count = metrics_.migration_count();
         s.avg_lookup_ns = metrics_.avg_lookup_ns();
@@ -216,20 +226,13 @@ private:
         return s;
     }
 
-    void record_lookup_locked() const {
-        const auto start = std::chrono::high_resolution_clock::now();
-        (void)start;
-        // Latency is recorded by callers via measure_distribution; here we
-        // keep a lightweight note that a lookup occurred.
-    }
-
     std::vector<Entry> ring_;
     std::map<NodeId, NodeType> nodes_;
     std::map<Key, NodeId> last_assignment_;
     std::vector<Key> probe_keys_;
     size_t vnodes_per_node_;
     std::string preferred_zone_;
-    mutable Metrics metrics_;
+    Metrics metrics_;
     mutable std::shared_mutex mutex_;
     DefaultHasher<Key> hasher_;
 };

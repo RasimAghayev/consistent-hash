@@ -12,13 +12,6 @@
 
 using namespace consistent_hash;
 
-static std::vector<std::string> make_nodes(int n) {
-    std::vector<std::string> ids;
-    for (int i = 0; i < n; ++i)
-        ids.push_back("node-" + std::to_string(i));
-    return ids;
-}
-
 template <typename Hasher>
 static void bench_lookup(benchmark::State& state) {
     const int n = static_cast<int>(state.range(0));

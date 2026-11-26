@@ -25,6 +25,18 @@ inline uint64_t fnv1a_64(std::string_view sv) noexcept {
     return fnv1a_64(reinterpret_cast<const unsigned char*>(sv.data()), sv.size());
 }
 
+// Avalanche finalizer (splitmix64). Fixes FNV-1a clustering on similar keys
+// (e.g. "key:0".."key:9999" hash to a narrow range) so consistent-hash rings
+// distribute them across the full 64-bit space.
+inline uint64_t mix64(uint64_t x) noexcept {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
+
 }  // namespace detail
 
 // Default key hasher. Strings are hashed by content; arithmetic types by
@@ -32,17 +44,20 @@ inline uint64_t fnv1a_64(std::string_view sv) noexcept {
 template <typename Key>
 struct DefaultHasher {
     uint64_t operator()(const Key& key) const noexcept {
+        uint64_t h;
         if constexpr (std::is_same_v<Key, std::string> ||
                       std::is_same_v<Key, std::string_view>) {
-            return detail::fnv1a_64(key.data(), key.size());
+            h = detail::fnv1a_64(reinterpret_cast<const unsigned char*>(key.data()),
+                                 key.size());
         } else if constexpr (std::is_arithmetic_v<Key>) {
-            return detail::fnv1a_64(
+            h = detail::fnv1a_64(
                 reinterpret_cast<const unsigned char*>(&key), sizeof(Key));
         } else {
-            size_t h = std::hash<Key>{}(key);
-            return detail::fnv1a_64(
-                reinterpret_cast<const unsigned char*>(&h), sizeof(h));
+            size_t hh = std::hash<Key>{}(key);
+            h = detail::fnv1a_64(
+                reinterpret_cast<const unsigned char*>(&hh), sizeof(hh));
         }
+        return detail::mix64(h);
     }
 };
 

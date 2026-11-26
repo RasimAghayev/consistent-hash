@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cmath>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -48,7 +50,6 @@ typename Hasher::StatsType measure_distribution(const Hasher& hasher,
     using Stats = typename Hasher::StatsType;
 
     std::map<NodeId, size_t> counts;
-    counts.reserve(keys.size());
     for (const auto& k : keys) {
         counts[hasher.lookup(k)]++;
     }

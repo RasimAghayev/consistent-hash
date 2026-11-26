@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
@@ -73,20 +74,7 @@ public:
 
     NodeId lookup(const Key& key) const override {
         std::shared_lock<std::shared_mutex> lock(mutex_);
-        if (nodes_.empty()) throw std::runtime_error("MaglevHasher: no nodes");
-        const size_t start = static_cast<size_t>(hasher_(key) % table_size_);
-        size_t idx = start;
-        for (size_t i = 0; i < table_size_; ++i) {
-            const size_t s = table_[idx];
-            if (s != empty_slot_) {
-                const NodeType& node = nodes_[s];
-                if (node.status == NodeStatus::Active) {
-                    return node.id;
-                }
-            }
-            idx = (idx + 1) % table_size_;
-        }
-        throw std::runtime_error("MaglevHasher: no active nodes");
+        return lookup_unlocked(key);
     }
 
     std::vector<NodeId> lookup_n(const Key& key, size_t n) const override {
@@ -165,7 +153,7 @@ private:
         migrations.reserve(probe_keys_.size());
         std::map<Key, NodeId> current;
         for (const auto& k : probe_keys_) {
-            try { current[k] = lookup_locked_unlocked(k); } catch (...) {}
+            try { current[k] = lookup_unlocked(k); } catch (...) {}
         }
         for (const auto& [k, node] : current) {
             auto pit = last_assignment_.find(k);
@@ -179,8 +167,8 @@ private:
         return migrations;
     }
 
-    NodeId lookup_locked_unlocked(const Key& k) const {
-        std::shared_lock<std::shared_mutex> lock(mutex_);
+    // Caller must hold the mutex.
+    NodeId lookup_unlocked(const Key& k) const {
         if (nodes_.empty()) throw std::runtime_error("empty");
         const size_t start = static_cast<size_t>(hasher_(k) % table_size_);
         size_t idx = start;
