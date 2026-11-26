@@ -55,7 +55,7 @@ class ConsistentHashConan(ConanFile):
         if self.options.build_benchmarks:
             self.requires("benchmark/1.8.3")
         # nlohmann/json and msgpack-c for serialization
-        self.requires("nlohmann_json/3.11.2")
+        self.requires("nlohmann_json/3.12.0")
         self.requires("msgpack-c/6.1.0")
     
     def build_requirements(self):
