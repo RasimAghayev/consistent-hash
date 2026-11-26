@@ -5,6 +5,9 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  schedule:
+    # Weekly fuzzing run
+    - cron: '0 2 * * 0'
 
 env:
   CMAKE_BUILD_TYPE: Release
@@ -70,6 +73,75 @@ jobs:
           path: build/debug/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
 
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Install lcov and gcovr
+        run: sudo apt-get update && sudo apt-get install -y lcov gcovr
+
+      - name: Configure with coverage
+        run: |
+          cmake -S . -B build/coverage \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCONSISTENT_HASH_ENABLE_COVERAGE=ON \
+            -DCONSISTENT_HASH_BUILD_TESTS=ON \
+            -DCONSISTENT_HASH_BUILD_BENCHMARKS=OFF \
+            -DCONSISTENT_HASH_BUILD_EXAMPLES=OFF
+
+      - name: Build with coverage
+        run: cmake --build build/coverage --parallel 4
+
+      - name: Run tests with coverage
+        run: ctest --test-dir build/coverage --output-on-failure --parallel 4
+
+      - name: Generate coverage report
+        run: |
+          cd build/coverage
+          lcov --capture --directory . --output-file coverage.info --ignore-errors mismatch
+          lcov --remove coverage.info '/usr/*' '*/_deps/*' '*/tests/*' '*/examples/*' '*/benchmarks/*' '*/fuzz/*' --output-file coverage.filtered.info
+          lcov --list coverage.filtered.info
+          gcovr -r . --filter ../include/consistent_hash --exclude ../tests --exclude ../examples --exclude ../benchmarks --exclude ../fuzz --xml --output coverage.xml
+          gcovr -r . --filter ../include/consistent_hash --exclude ../tests --exclude ../examples --exclude ../benchmarks --exclude ../fuzz --html --output coverage.html
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            build/coverage/coverage.filtered.info
+            build/coverage/coverage.xml
+            build/coverage/coverage.html
+
+      - name: Comment coverage on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const coverage = fs.readFileSync('build/coverage/coverage.filtered.info', 'utf8');
+            const lines = coverage.split('\n').filter(l => l.startsWith('LF:') || l.startsWith('LH:'));
+            let lf = 0, lh = 0;
+            for (const line of lines) {
+              if (line.startsWith('LF:')) lf += parseInt(line.split(':')[1]);
+              if (line.startsWith('LH:')) lh += parseInt(line.split(':')[1]);
+            }
+            const pct = lf > 0 ? ((lh / lf) * 100).toFixed(2) : '0.00';
+            const body = `## Code Coverage Report\n\n**Line Coverage: ${pct}%** (${lh}/${lf} lines)\n\n<details><summary>Full lcov output</summary>\n\n\`\`\`\n${coverage}\n\`\`\`\n\n</details>`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
   sanitize:
     name: Sanitizers (Address/Undefined)
     runs-on: ubuntu-22.04
@@ -134,6 +206,50 @@ jobs:
           cd build/clang-tidy
           run-clang-tidy-18.py -p . -header-filter=.*/include/.* -quiet 2>&1 | head -200
 
+  fuzz:
+    name: Fuzzing (libFuzzer)
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang-18
+
+      - name: Configure with libFuzzer
+        run: |
+          cmake -S . -B build/fuzz \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCONSISTENT_HASH_BUILD_FUZZERS=ON \
+            -DCONSISTENT_HASH_BUILD_TESTS=OFF \
+            -DCONSISTENT_HASH_BUILD_BENCHMARKS=OFF \
+            -DCONSISTENT_HASH_BUILD_EXAMPLES=OFF \
+            -DCMAKE_CXX_COMPILER=clang++-18
+
+      - name: Build fuzzers
+        run: cmake --build build/fuzz --parallel 4
+
+      - name: Run fuzzer smoke tests
+        run: |
+          cd build/fuzz
+          for fuzzer in fuzz_*; do
+            echo "Running $fuzzer..."
+            timeout 60 ./"$fuzzer" -runs=1000 -max_len=100 -timeout=30 || true
+          done
+
+      - name: Upload crash corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus
+          path: build/fuzz/*.json
+          if-no-files-found: ignore
+
   docker-build:
     name: Docker Multi-stage Build
     runs-on: ubuntu-22.04
@@ -170,7 +286,7 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-22.04
-    needs: [build-and-test, sanitize, clang-tidy, docker-build]
+    needs: [build-and-test, sanitize, clang-tidy, docker-build, coverage, fuzz]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write

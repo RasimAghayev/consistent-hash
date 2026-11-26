@@ -17,6 +17,8 @@ option(CONSISTENT_HASH_BUILD_TESTS "Build GoogleTest suite" ON)
 option(CONSISTENT_HASH_BUILD_BENCHMARKS "Build Google Benchmark suite" ON)
 option(CONSISTENT_HASH_BUILD_EXAMPLES "Build example demos" ON)
 option(CONSISTENT_HASH_ENABLE_SANITIZERS "Enable sanitizers in Debug builds" OFF)
+option(CONSISTENT_HASH_ENABLE_COVERAGE "Enable code coverage reporting" OFF)
+option(CONSISTENT_HASH_BUILD_FUZZERS "Build libFuzzer targets" OFF)
 
 # Base compile options for all targets
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -31,6 +33,18 @@ if(CONSISTENT_HASH_ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
         add_link_options(-fsanitize=address,undefined)
     endif()
+endif()
+
+# Code coverage instrumentation
+if(CONSISTENT_HASH_ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(--coverage -O0 -g)
+    add_link_options(--coverage)
+endif()
+
+# libFuzzer support
+if(CONSISTENT_HASH_BUILD_FUZZERS AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    add_compile_options(-fsanitize=fuzzer,address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=fuzzer,address)
 endif()
 
 # Header-only interface target
@@ -158,3 +172,84 @@ install(FILES
 
 # CPack for packaging
 include(CPack)
+
+# libFuzzer targets (Clang only)
+if(CONSISTENT_HASH_BUILD_FUZZERS AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    message(STATUS "Building libFuzzer targets")
+
+    # Fuzzer for RingHasher lookup
+    add_executable(fuzz_ring_lookup fuzz/fuzz_ring_lookup.cpp)
+    target_link_libraries(fuzz_ring_lookup PRIVATE consistent_hash_impl)
+    target_compile_features(fuzz_ring_lookup PRIVATE cxx_std_20)
+    set_target_properties(fuzz_ring_lookup PROPERTIES
+        OUTPUT_NAME "fuzz_ring_lookup"
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz
+    )
+
+    # Fuzzer for JumpHasher
+    add_executable(fuzz_jump_lookup fuzz/fuzz_jump_lookup.cpp)
+    target_link_libraries(fuzz_jump_lookup PRIVATE consistent_hash_impl)
+    target_compile_features(fuzz_jump_lookup PRIVATE cxx_std_20)
+    set_target_properties(fuzz_jump_lookup PROPERTIES
+        OUTPUT_NAME "fuzz_jump_lookup"
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz
+    )
+
+    # Fuzzer for RendezvousHasher
+    add_executable(fuzz_rendezvous_lookup fuzz/fuzz_rendezvous_lookup.cpp)
+    target_link_libraries(fuzz_rendezvous_lookup PRIVATE consistent_hash_impl)
+    target_compile_features(fuzz_rendezvous_lookup PRIVATE cxx_std_20)
+    set_target_properties(fuzz_rendezvous_lookup PROPERTIES
+        OUTPUT_NAME "fuzz_rendezvous_lookup"
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz
+    )
+
+    # Fuzzer for MaglevHasher
+    add_executable(fuzz_maglev_lookup fuzz/fuzz_maglev_lookup.cpp)
+    target_link_libraries(fuzz_maglev_lookup PRIVATE consistent_hash_impl)
+    target_compile_features(fuzz_maglev_lookup PRIVATE cxx_std_20)
+    set_target_properties(fuzz_maglev_lookup PROPERTIES
+        OUTPUT_NAME "fuzz_maglev_lookup"
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz
+    )
+
+    # Fuzzer for MultiProbeHasher
+    add_executable(fuzz_multiprobe_lookup fuzz/fuzz_multiprobe_lookup.cpp)
+    target_link_libraries(fuzz_multiprobe_lookup PRIVATE consistent_hash_impl)
+    target_compile_features(fuzz_multiprobe_lookup PRIVATE cxx_std_20)
+    set_target_properties(fuzz_multiprobe_lookup PROPERTIES
+        OUTPUT_NAME "fuzz_multiprobe_lookup"
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz
+    )
+
+    # Fuzzer for BoundedLoadsHasher
+    add_executable(fuzz_bounded_loads_lookup fuzz/fuzz_bounded_loads_lookup.cpp)
+    target_link_libraries(fuzz_bounded_loads_lookup PRIVATE consistent_hash_impl)
+    target_compile_features(fuzz_bounded_loads_lookup PRIVATE cxx_std_20)
+    set_target_properties(fuzz_bounded_loads_lookup PROPERTIES
+        OUTPUT_NAME "fuzz_bounded_loads_lookup"
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz
+    )
+
+    # Fuzzer for NodeManager (deserialize)
+    add_executable(fuzz_node_manager fuzz/fuzz_node_manager.cpp)
+    target_link_libraries(fuzz_node_manager PRIVATE consistent_hash_impl)
+    target_compile_features(fuzz_node_manager PRIVATE cxx_std_20)
+    set_target_properties(fuzz_node_manager PROPERTIES
+        OUTPUT_NAME "fuzz_node_manager"
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz
+    )
+
+    # Custom target to run all fuzzers for a short time (CI smoke test)
+    add_custom_target(fuzz-smoke
+        COMMAND ${CMAKE_BINARY_DIR}/fuzz/fuzz_ring_lookup -runs=1000 -max_len=100 -timeout=30
+        COMMAND ${CMAKE_BINARY_DIR}/fuzz/fuzz_jump_lookup -runs=1000 -max_len=100 -timeout=30
+        COMMAND ${CMAKE_BINARY_DIR}/fuzz/fuzz_rendezvous_lookup -runs=1000 -max_len=100 -timeout=30
+        COMMAND ${CMAKE_BINARY_DIR}/fuzz/fuzz_maglev_lookup -runs=1000 -max_len=100 -timeout=30
+        COMMAND ${CMAKE_BINARY_DIR}/fuzz/fuzz_multiprobe_lookup -runs=1000 -max_len=100 -timeout=30
+        COMMAND ${CMAKE_BINARY_DIR}/fuzz/fuzz_bounded_loads_lookup -runs=1000 -max_len=100 -timeout=30
+        COMMAND ${CMAKE_BINARY_DIR}/fuzz/fuzz_node_manager -runs=1000 -max_len=100 -timeout=30
+        COMMENT "Running libFuzzer smoke tests"
+        DEPENDS fuzz_ring_lookup fuzz_jump_lookup fuzz_rendezvous_lookup fuzz_maglev_lookup fuzz_multiprobe_lookup fuzz_bounded_loads_lookup fuzz_node_manager
+    )
+endif()

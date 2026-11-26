@@ -54,6 +54,32 @@
         "CONSISTENT_HASH_BUILD_BENCHMARKS": "ON",
         "CONSISTENT_HASH_BUILD_EXAMPLES": "ON"
       }
+    },
+    {
+      "name": "coverage",
+      "inherits": "base",
+      "displayName": "Coverage Build",
+      "description": "Debug build with code coverage instrumentation",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CONSISTENT_HASH_ENABLE_COVERAGE": "ON",
+        "CONSISTENT_HASH_BUILD_TESTS": "ON",
+        "CONSISTENT_HASH_BUILD_BENCHMARKS": "OFF",
+        "CONSISTENT_HASH_BUILD_EXAMPLES": "OFF"
+      }
+    },
+    {
+      "name": "fuzz",
+      "inherits": "base",
+      "displayName": "Fuzzer Build",
+      "description": "Release build with libFuzzer (requires Clang)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CONSISTENT_HASH_BUILD_FUZZERS": "ON",
+        "CONSISTENT_HASH_BUILD_TESTS": "OFF",
+        "CONSISTENT_HASH_BUILD_BENCHMARKS": "OFF",
+        "CONSISTENT_HASH_BUILD_EXAMPLES": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -68,6 +94,14 @@
     {
       "name": "ci",
       "configurePreset": "ci"
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz"
     }
   ],
   "testPresets": [
@@ -84,6 +118,11 @@
     {
       "name": "ci",
       "configurePreset": "ci",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage",
       "output": {"outputOnFailure": true}
     }
   ]
