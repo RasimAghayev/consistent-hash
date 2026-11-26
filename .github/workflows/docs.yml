@@ -1,0 +1,105 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  doxygen:
+    name: Build Doxygen Documentation
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Doxygen and GraphViz
+        run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
+
+      - name: Build Doxygen
+        run: doxygen Doxyfile
+
+      - name: Upload Doxygen artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: doxygen-docs
+          path: docs/doxygen/html/
+          retention-days: 30
+
+  sphinx:
+    name: Build Sphinx Documentation
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Sphinx and dependencies
+        run: |
+          pip install sphinx sphinx-rtd-theme sphinx-copybutton sphinx-tabs sphinx-design myst-parser breathe
+
+      - name: Install Doxygen for Breathe
+        run: sudo apt-get update && sudo apt-get install -y doxygen
+
+      - name: Build Sphinx
+        run: |
+          cd docs/sphinx
+          make html
+
+      - name: Upload Sphinx artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: sphinx-docs
+          path: docs/sphinx/_build/html/
+          retention-days: 30
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: [doxygen, sphinx]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download Doxygen docs
+        uses: actions/download-artifact@v5
+        with:
+          name: doxygen-docs
+          path: docs/doxygen/html
+
+      - name: Download Sphinx docs
+        uses: actions/download-artifact@v5
+        with:
+          name: sphinx-docs
+          path: docs/sphinx/_build/html
+
+      - name: Create combined site
+        run: |
+          mkdir -p _site
+          cp -r docs/doxygen/html/* _site/
+          mkdir -p _site/sphinx
+          cp -r docs/sphinx/_build/html/* _site/sphinx/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

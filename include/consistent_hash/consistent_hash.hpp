@@ -12,6 +12,7 @@
 #include "consistent_hash/concepts.hpp"
 #include "consistent_hash/hash.hpp"
 #include "consistent_hash/types.hpp"
+#include "consistent_hash/observability.hpp"
 
 namespace consistent_hash {
 

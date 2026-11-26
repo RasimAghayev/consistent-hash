@@ -13,8 +13,43 @@ env:
   CMAKE_BUILD_TYPE: Release
 
 jobs:
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-22.04
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [cpp]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Setup CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Configure with CMake
+        run: cmake -S . -B build/codeql -DCMAKE_BUILD_TYPE=Debug -DCONSISTENT_HASH_BUILD_TESTS=ON -DCONSISTENT_HASH_BUILD_BENCHMARKS=OFF -DCONSISTENT_HASH_BUILD_EXAMPLES=OFF
+
+      - name: Build for CodeQL
+        run: cmake --build build/codeql --parallel 4
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
   build-and-test:
-    name: Build and Test (${{ matrix.os }}, ${{ matrix.build_type }})
+    name: Build and Test (${{ matrix.os }}, ${{ matrix.build_type }}, ${{ matrix.compiler }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -23,31 +58,59 @@ jobs:
           - os: ubuntu-22.04
             build_type: Debug
             ccache: true
+            compiler: gcc
           - os: ubuntu-22.04
             build_type: Release
             ccache: true
+            compiler: gcc
+          - os: ubuntu-22.04
+            build_type: Release
+            ccache: true
+            compiler: clang
+          - os: ubuntu-24.04
+            build_type: Release
+            ccache: true
+            compiler: gcc
           - os: macos-14
             build_type: Release
             ccache: true
+            compiler: clang
+          - os: macos-15
+            build_type: Release
+            ccache: true
+            compiler: clang
           - os: windows-2022
             build_type: Release
             ccache: false
+            compiler: msvc
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup CMake
         uses: lukka/get-cmake@latest
 
+      - name: Configure compiler (Linux)
+        if: runner.os == 'Linux' && matrix.compiler == 'clang'
+        run: |
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
+
+      - name: Configure compiler (Linux GCC)
+        if: runner.os == 'Linux' && matrix.compiler == 'gcc'
+        run: |
+          echo "CC=gcc" >> $GITHUB_ENV
+          echo "CXX=g++" >> $GITHUB_ENV
+
       - name: Setup ccache (Linux/macOS)
         if: runner.os != 'Windows' && matrix.ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ matrix.build_type }}-${{ hashFiles('**/CMakeLists.txt', '**/*.cpp', '**/*.hpp') }}
+          key: ccache-${{ runner.os }}-${{ matrix.build_type }}-${{ matrix.compiler }}-${{ hashFiles('**/CMakeLists.txt', '**/*.cpp', '**/*.hpp') }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ matrix.build_type }}-
+            ccache-${{ runner.os }}-${{ matrix.build_type }}-${{ matrix.compiler }}-
 
       - name: Configure ccache
         if: runner.os != 'Windows' && matrix.ccache
@@ -67,9 +130,9 @@ jobs:
 
       - name: Upload Test Artifacts (Debug)
         if: matrix.build_type == 'Debug' && always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: test-results-${{ matrix.os }}-debug
+          name: test-results-${{ matrix.os }}-${{ matrix.compiler }}-debug
           path: build/debug/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
 
@@ -79,7 +142,7 @@ jobs:
     needs: build-and-test
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup CMake
         uses: lukka/get-cmake@latest
@@ -112,7 +175,7 @@ jobs:
           gcovr -r . --filter ../include/consistent_hash --exclude ../tests --exclude ../examples --exclude ../benchmarks --exclude ../fuzz --html --output coverage.html
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: coverage-report
           path: |
@@ -122,7 +185,7 @@ jobs:
 
       - name: Comment coverage on PR
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const fs = require('fs');
@@ -148,13 +211,13 @@ jobs:
     needs: build-and-test
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup CMake
         uses: lukka/get-cmake@latest
 
       - name: Setup ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.ccache
           key: ccache-sanitize-${{ hashFiles('**/CMakeLists.txt', '**/*.cpp', '**/*.hpp') }}
@@ -184,7 +247,7 @@ jobs:
     needs: build-and-test
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install clang-tidy
         run: sudo apt-get update && sudo apt-get install -y clang-tidy-18
@@ -213,7 +276,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'push'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup CMake
         uses: lukka/get-cmake@latest
@@ -244,55 +307,58 @@ jobs:
 
       - name: Upload crash corpus
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: fuzz-corpus
           path: build/fuzz/*.json
           if-no-files-found: ignore
 
   docker-build:
-    name: Docker Multi-stage Build
+    name: Docker Multi-arch Build
     runs-on: ubuntu-22.04
     needs: build-and-test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
-      - name: Build Docker image
-        uses: docker/build-push-action@v5
+      - name: Build Docker multi-arch image
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: false
+          platforms: linux/amd64,linux/arm64
           tags: consistent-hash:${{ github.sha }}
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Test Docker image
+      - name: Test Docker image (amd64)
         run: |
-          docker run --rm consistent-hash:${{ github.sha }} \
+          docker run --rm --platform linux/amd64 consistent-hash:${{ github.sha }} \
             ./bin/example_load_balancer
-          docker run --rm consistent-hash:${{ github.sha }} \
+          docker run --rm --platform linux/amd64 consistent-hash:${{ github.sha }} \
             ./bin/example_cache_sharding
-          docker run --rm consistent-hash:${{ github.sha }} \
+          docker run --rm --platform linux/amd64 consistent-hash:${{ github.sha }} \
             ./bin/example_db_sharding
-          docker run --rm consistent-hash:${{ github.sha }} \
+          docker run --rm --platform linux/amd64 consistent-hash:${{ github.sha }} \
             ./bin/example_cdn_routing
 
   release:
     name: Create Release
     runs-on: ubuntu-22.04
-    needs: [build-and-test, sanitize, clang-tidy, docker-build, coverage, fuzz]
+    needs: [build-and-test, sanitize, clang-tidy, docker-build, coverage, fuzz, codeql]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -314,10 +380,41 @@ jobs:
           cpack -G TGZ
           cpack -G ZIP
 
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: build/release
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v5
+        with:
+          name: sbom
+          path: build/release/sbom.spdx.json
+
+      - name: Sign artifacts with cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'latest'
+
+      - name: Sign release artifacts
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          cd build/release
+          for file in *.tar.gz *.zip; do
+            cosign sign-blob --yes --output-signature "${file}.sig" "${file}"
+            cosign sign-blob --yes --output-signature "${file}.sig.pem" --type=sha256 "${file}"
+          done
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             build/release/*.tar.gz
             build/release/*.zip
+            build/release/*.sig
+            build/release/*.sig.pem
+            build/release/sbom.spdx.json
           generate_release_notes: true

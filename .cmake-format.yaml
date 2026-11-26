@@ -1,0 +1,202 @@
+# cmake-format configuration
+# https://github.com/cheshirekow/cmake_format/blob/master/docs/source/configuration.rst
+
+format:
+  # How wide to allow formatted cmake files
+  line_width: 100
+
+  # How many spaces to use for indentation
+  tab_size: 2
+
+  # If true, use tabs instead of spaces for indentation
+  use_tabchars: false
+
+  # If true, allow wrapped lines to exceed line_width
+  allow_wrapped_lines: true
+
+  # If true, separate commands with an empty line
+  separate_ctrl_name_with_space: false
+  separate_fn_name_with_space: false
+
+  # Format command names as lower-case
+  command_case: lower
+
+  # Format keywords as lower-case
+  keyword_case: upper
+
+  # Format variables as lower-case
+  variable_case: lower
+
+  # Max number of nested conditionals before forcing a newline
+  max_subgroups_hwrap: 2
+
+  # Max number of positional arguments before forcing a newline
+  max_pargs_hwrap: 6
+
+  # Max number of lines for a command to appear on a single line
+  max_lines_hwrap: 2
+
+  # If true, don't format commands in macros
+  dont_format_macros: false
+
+  # If true, don't format commands in functions
+  dont_format_functions: false
+
+  # Additional commands to format
+  additional_commands:
+    FetchContent_Declare:
+      flags: [GIT_REPOSITORY, GIT_TAG, GIT_SHALLOW, SOURCE_DIR, BINARY_DIR, SOURCE_SUBDIR, CONFIGURE_COMMAND, BUILD_COMMAND, INSTALL_COMMAND, TEST_COMMAND, LOG_DOWNLOAD, LOG_CONFIGURE, LOG_BUILD, LOG_INSTALL, LOG_TEST, QUIET, GIT_PROGRESS, GIT_CONFIG, GIT_SUBMODULES, URL_HASH, PATCH_COMMAND, UPDATE_COMMAND, GIT_SUBMODULES]
+      kwargs: {DEPENDS: '*', GIT_TAG: '*', GIT_REPOSITORY: '*', SOURCE_DIR: '*', BINARY_DIR: '*'}
+    FetchContent_MakeAvailable:
+      flags: []
+      kwargs: {SOURCES: '*'}
+    target_compile_features:
+      flags: [PUBLIC, PRIVATE, INTERFACE]
+      kwargs: {}
+    target_include_directories:
+      flags: [PUBLIC, PRIVATE, INTERFACE, SYSTEM, BEFORE, AFTER]
+      kwargs: {}
+    target_link_libraries:
+      flags: [PUBLIC, PRIVATE, INTERFACE, DEBUG, OPTIMIZED, GENERAL]
+      kwargs: {}
+    target_compile_options:
+      flags: [PUBLIC, PRIVATE, INTERFACE]
+      kwargs: {}
+    target_link_options:
+      flags: [PUBLIC, PRIVATE, INTERFACE]
+      kwargs: {}
+    target_sources:
+      flags: [PUBLIC, PRIVATE, INTERFACE]
+      kwargs: {}
+    target_compile_definitions:
+      flags: [PUBLIC, PRIVATE, INTERFACE]
+      kwargs: {}
+    add_compile_options:
+      flags: []
+      kwargs: {}
+    add_link_options:
+      flags: []
+      kwargs: {}
+    add_definitions:
+      flags: []
+      kwargs: {}
+    find_package:
+      flags: [REQUIRED, QUIET, MODULE, CONFIG, NO_MODULE, NO_CMAKE_PATH, NO_CMAKE_ENVIRONMENT_PATH, NO_SYSTEM_ENVIRONMENT_PATH, NO_CMAKE_PACKAGE_REGISTRY, NO_CMAKE_BUILDS_PATH, NO_CMAKE_SYSTEM_PACKAGE_REGISTRY, NO_CMAKE_SYSTEM_PATH, CMAKE_FIND_ROOT_PATH_BOTH, CMAKE_FIND_ROOT_PATH_ONLY, CMAKE_FIND_ROOT_PATH_NEVER]
+      kwargs: {VERSION: '*', COMPONENTS: '*', EXACT: '*', PATHS: '*', HINTS: '*', NAMES: '*', NAMES_PER_DIR: '*', DOC: '*', REQUIRED: '*'}
+    configure_package_config_file:
+      flags: [INSTALL_DESTINATION, PATH_VARS, NO_SET_AND_CHECK_MACRO, NO_CHECK_REQUIRED_COMPONENTS_MACRO]
+      kwargs: {}
+    write_basic_package_version_file:
+      flags: [COMPATIBILITY]
+      kwargs: {VERSION: '*'}
+    install:
+      flags: [EXPORT, ARCHIVE, LIBRARY, RUNTIME, FRAMEWORK, BUNDLE, PUBLIC_HEADER, PRIVATE_HEADER, RESOURCE, DESTINATION, PERMISSIONS, CONFIGURATIONS, COMPONENT, RENAME, OPTIONAL, NAMELINK_ONLY, NAMELINK_SKIP, EXCLUDE_FROM_ALL]
+      kwargs: {TARGETS: '*', FILES: '*', PROGRAMS: '*', DIRECTORY: '*', SCRIPT: '*', CODE: '*'}
+    install:
+      flags: [EXPORT, ARCHIVE, LIBRARY, RUNTIME, FRAMEWORK, BUNDLE, PUBLIC_HEADER, PRIVATE_HEADER, RESOURCE, DESTINATION, PERMISSIONS, CONFIGURATIONS, COMPONENT, RENAME, OPTIONAL, NAMELINK_ONLY, NAMELINK_SKIP, EXCLUDE_FROM_ALL]
+      kwargs: {TARGETS: '*', FILES: '*', PROGRAMS: '*', DIRECTORY: '*', SCRIPT: '*', CODE: '*'}
+    install:
+      flags: [EXPORT, ARCHIVE, LIBRARY, RUNTIME, FRAMEWORK, BUNDLE, PUBLIC_HEADER, PRIVATE_HEADER, RESOURCE, DESTINATION, PERMISSIONS, CONFIGURATIONS, COMPONENT, RENAME, OPTIONAL, NAMELINK_ONLY, NAMELINK_SKIP, EXCLUDE_FROM_ALL]
+      kwargs: {TARGETS: '*', FILES: '*', PROGRAMS: '*', DIRECTORY: '*', SCRIPT: '*', CODE: '*'}
+    install:
+      flags: [EXPORT, ARCHIVE, LIBRARY, RUNTIME, FRAMEWORK, BUNDLE, PUBLIC_HEADER, PRIVATE_HEADER, RESOURCE, DESTINATION, PERMISSIONS, CONFIGURATIONS, COMPONENT, RENAME, OPTIONAL, NAMELINK_ONLY, NAMELINK_SKIP, EXCLUDE_FROM_ALL]
+      kwargs: {TARGETS: '*', FILES: '*', PROGRAMS: '*', DIRECTORY: '*', SCRIPT: '*', CODE: '*'}
+    include:
+      flags: [OPTIONAL, RESULT_VARIABLE, NO_POLICY_SCOPE]
+      kwargs: {}
+    add_subdirectory:
+      flags: [EXCLUDE_FROM_ALL]
+      kwargs: {}
+    option:
+      flags: []
+      kwargs: {DEFAULT: '*', DESCRIPTION: '*'}
+    set:
+      flags: [PARENT_SCOPE, CACHE, FORCE, INTERNAL]
+      kwargs: {}
+    set_property:
+      flags: [GLOBAL, DIRECTORY, TARGET, SOURCE, TEST, CACHE, VARIABLE]
+      kwargs: {PROPERTY: '*', APPEND: '*', APPEND_STRING: '*', PREPEND: '*', PREPEND_STRING: '*'}
+    target_link_libraries:
+      flags: [PUBLIC, PRIVATE, INTERFACE, DEBUG, OPTIMIZED, GENERAL]
+      kwargs: {}
+
+markup:
+  # If true, enable comment markup for reST
+  enable_markup: true
+
+  # Character to use for bullet lists
+  bullet_char: '*'
+
+  # Character to use for numbered lists
+  enum_char: '.'
+
+  # If true, use first line of comment as summary
+  first_comment_is_literal: true
+
+  # Regex to match literal comments
+  literal_comment_pattern: '^\\s*[#>]'
+
+  # Regex to match fenced code blocks
+  fence_pattern: '^\\s*([`~]{3,})\\s*(\\w+)?\\s*$'
+
+  # Regex to match ruler lines
+  ruler_pattern: '^\\s*[^\\w\\s]{3,}\\s*$'
+
+  # Regex to match explicit trailing spaces
+  explicit_trailing_pattern: '#<'
+
+  # If true, don't format commands in comments
+  dont_format_comments: false
+
+lint:
+  # List of lint checks to enable
+  disabled_codes: []
+
+  # Function naming pattern
+  function_pattern: '^[a-z_][a-z0-9_]*$'
+
+  # Macro naming pattern
+  macro_pattern: '^[A-Z_][A-Z0-9_]*$'
+
+  # Global variable naming pattern
+  global_var_pattern: '^[A-Z_][A-Z0-9_]*$'
+
+  # Internal variable naming pattern
+  internal_var_pattern: '^_[A-Z_][A-Z0-9_]*$'
+
+  # Local variable naming pattern
+  local_var_pattern: '^[a-z_][a-z0-9_]*$'
+
+  # Private variable naming pattern
+  private_var_pattern: '^_[a-z_][a-z0-9_]*$'
+
+  # Public variable naming pattern
+  public_var_pattern: '^[A-Z_][A-Z0-9_]*$'
+
+  # Argument naming pattern
+  argument_var_pattern: '^[a-z_][a-z0-9_]*$'
+
+  # Keyword naming pattern
+  keyword_pattern: '^[A-Z_][A-Z0-9_]*$'
+
+  # Maximum length of a command line
+  max_conditionals_custom_parser: 3
+
+  # Minimum length of a command line
+  min_conditionals_custom_parser: 1
+
+  # List of decorators to ignore
+  decorators: []
+
+  # List of function names to ignore
+  function_decorators: []
+
+  # List of variable names to ignore
+  variable_decorators: []
+
+encode:
+  # Input encoding
+  input_encoding: utf-8
+
+  # Output encoding
+  output_encoding: utf-8

@@ -19,12 +19,40 @@ option(CONSISTENT_HASH_BUILD_EXAMPLES "Build example demos" ON)
 option(CONSISTENT_HASH_ENABLE_SANITIZERS "Enable sanitizers in Debug builds" OFF)
 option(CONSISTENT_HASH_ENABLE_COVERAGE "Enable code coverage reporting" OFF)
 option(CONSISTENT_HASH_BUILD_FUZZERS "Build libFuzzer targets" OFF)
+option(CONSISTENT_HASH_BUILD_PROPERTY_TESTS "Build RapidCheck property-based tests" OFF)
 
 # Base compile options for all targets
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic -Werror)
+    add_compile_options(
+        -Wall -Wextra -Wpedantic -Werror
+        -Wformat=2 -Wformat-security
+        -Wcast-align -Wcast-qual
+        -Wconversion -Wsign-conversion
+        -Wnull-dereference -Wdouble-promotion
+        -Wshadow -Wold-style-cast
+        -Wnon-virtual-dtor -Woverloaded-virtual
+        -Wsuggest-override -Wsuggest-final-types
+        -Wduplicated-cond -Wduplicated-branches
+        -Wlogical-op -Wuseless-cast
+    )
+    # Hardening flags (not in Debug to avoid performance impact)
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_compile_options(
+            -fstack-protector-strong
+            -D_FORTIFY_SOURCE=2
+            -fstack-clash-protection
+            -fcf-protection=full
+        )
+        add_link_options(
+            -Wl,-z,relro,-z,now
+            -Wl,-z,noexecstack
+        )
+    endif()
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    add_compile_options(/W4 /WX)
+    add_compile_options(/W4 /WX /permissive- /guard:cf /sdl)
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_link_options(/DYNAMICBASE:NO /NXCOMPAT /SAFESEH)
+    endif()
 endif()
 
 # Sanitizers in Debug
@@ -96,6 +124,29 @@ if(CONSISTENT_HASH_BUILD_TESTS)
 
     include(CTest)
     add_test(NAME consistent_hash_tests COMMAND consistent_hash_tests)
+endif()
+
+if(CONSISTENT_HASH_BUILD_PROPERTY_TESTS)
+    FetchContent_Declare(
+        rapidcheck
+        GIT_REPOSITORY https://github.com/emil-e/rapidcheck.git
+        GIT_TAG        master
+    )
+    FetchContent_MakeAvailable(rapidcheck)
+
+    add_executable(consistent_hash_property_tests
+        tests/property/test_ring_properties.cpp
+        tests/property/test_jump_properties.cpp
+        tests/property/test_rendezvous_properties.cpp
+        tests/property/test_maglev_properties.cpp
+        tests/property/test_multiprobe_properties.cpp
+        tests/property/test_bounded_loads_properties.cpp
+    )
+    target_link_libraries(consistent_hash_property_tests PRIVATE consistent_hash_impl RapidCheck::rapidcheck)
+    target_compile_features(consistent_hash_property_tests PRIVATE cxx_std_20)
+    
+    include(CTest)
+    add_test(NAME consistent_hash_property_tests COMMAND consistent_hash_property_tests)
 endif()
 
 if(CONSISTENT_HASH_BUILD_BENCHMARKS)

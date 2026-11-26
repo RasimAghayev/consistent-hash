@@ -1,0 +1,27 @@
+name: "Consistent Hash CodeQL Config"
+
+queries:
+  - uses: security-extended
+  - uses: security-and-quality
+
+paths-ignore:
+  - "tests/**"
+  - "examples/**"
+  - "benchmarks/**"
+  - "fuzz/**"
+  - "build/**"
+  - "_deps/**"
+  - "*.pb.cc"
+  - "*.pb.h"
+
+paths:
+  - "include/**"
+  - "src/**"
+
+compiler:
+  - clang
+  - gcc
+
+compiler-flags: "-std=c++20 -Wall -Wextra -Wpedantic"
+
+build-mode: manual

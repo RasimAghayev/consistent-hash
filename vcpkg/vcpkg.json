@@ -1,0 +1,27 @@
+{
+  "name": "consistent-hash",
+  "version": "1.0.0",
+  "description": "Modern C++20 Consistent Hashing Library",
+  "homepage": "https://github.com/RasimAghayev/consistent-hash",
+  "license": "MIT",
+  "dependencies": [],
+  "features": {
+    "tests": {
+      "description": "Build tests",
+      "dependencies": ["gtest"]
+    },
+    "benchmarks": {
+      "description": "Build benchmarks",
+      "dependencies": ["benchmark"]
+    },
+    "examples": {
+      "description": "Build examples",
+      "dependencies": []
+    },
+    "fuzzers": {
+      "description": "Build fuzzer targets",
+      "dependencies": ["llvm-libfuzzer"]
+    }
+  },
+  "default-features": ["examples"]
+}

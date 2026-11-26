@@ -1,0 +1,99 @@
+name: Mutation Testing
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * 0'  # Weekly on Sunday
+
+permissions:
+  contents: read
+
+jobs:
+  mutation-testing:
+    name: Mutation Testing (mull)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18 llvm-18-dev clang-18 \
+            libssl-dev zlib1g-dev \
+            cmake ninja-build \
+            git curl
+
+      - name: Setup CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Install mull
+        run: |
+          git clone https://github.com/mull-project/mull.git /tmp/mull
+          cd /tmp/mull
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local ..
+          make -j4
+          sudo make install
+
+      - name: Configure with Debug info
+        run: |
+          cmake -S . -B build/mull \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCONSISTENT_HASH_BUILD_TESTS=ON \
+            -DCONSISTENT_HASH_BUILD_BENCHMARKS=OFF \
+            -DCONSISTENT_HASH_BUILD_EXAMPLES=OFF \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_CXX_FLAGS="-fno-omit-frame-pointer -g -O0" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld"
+
+      - name: Build tests
+        run: cmake --build build/mull --parallel 4 --target consistent_hash_tests
+
+      - name: Run mull
+        run: |
+          cd build/mull
+          mull-cxx \
+            --test-framework=GoogleTest \
+            --workers=4 \
+            --timeout=30000 \
+            --mutators=cxx_scalar_value_mutator,cxx_arithmetic_replacement,cxx_logical_connector_replacement,cxx_comparison_operator_replacement \
+            --reporters=IDE,Elements \
+            --report-dir=mull-report \
+            ./consistent_hash_tests
+
+      - name: Upload mull report
+        uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: mull-report
+          path: build/mull/mull-report/
+          retention-days: 30
+
+      - name: Comment mutation score on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = 'build/mull/mull-report/mull.json';
+            if (fs.existsSync(reportPath)) {
+              const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+              const total = report.mutation_score?.total_mutants || 0;
+              const killed = report.mutation_score?.killed_mutants || 0;
+              const score = total > 0 ? ((killed / total) * 100).toFixed(2) : 0;
+              
+              const body = `## Mutation Testing Report\n\n**Mutation Score: ${score}%** (${killed}/${total} mutants killed)\n\n<details><summary>Details</summary>\n\n\`\`\`json\n${JSON.stringify(report.mutation_score, null, 2)}\n\`\`\`\n\n</details>`;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            }

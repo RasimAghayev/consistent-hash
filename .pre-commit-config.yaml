@@ -1,0 +1,36 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: debug-logger
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  - repo: https://github.com/cheshirekow/cmake-format-precommit
+    rev: v0.7.0
+    hooks:
+      - id: cmake-format
+        args: ['-i']
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v18.1.8
+    hooks:
+      - id: clang-format
+        types: [c, cpp]
+        args: ['-i', '--style=file']
+
+  - repo: local
+    hooks:
+      - id: clang-tidy
+        name: clang-tidy
+        entry: clang-tidy
+        language: system
+        types: [c, cpp]
+        args: ['-p=build/release', '-header-filter=.*/include/.*', '-quiet']
+        pass_filenames: true
+        require_serial: true
