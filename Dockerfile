@@ -1,5 +1,5 @@
 # Build and test image for ConsistentHash (C++17).
-FROM gcc:13.2 AS builder
+FROM gcc:16.1 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake ninja-build clang-format git make ca-certificates \
