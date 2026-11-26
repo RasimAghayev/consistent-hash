@@ -130,7 +130,7 @@ jobs:
 
       - name: Upload Test Artifacts (Debug)
         if: matrix.build_type == 'Debug' && always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: test-results-${{ matrix.os }}-${{ matrix.compiler }}-debug
           path: build/debug/Testing/Temporary/LastTest.log
@@ -175,7 +175,7 @@ jobs:
           gcovr -r . --filter ../include/consistent_hash --exclude ../tests --exclude ../examples --exclude ../benchmarks --exclude ../fuzz --html --output coverage.html
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: |
@@ -307,7 +307,7 @@ jobs:
 
       - name: Upload crash corpus
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-corpus
           path: build/fuzz/*.json
@@ -388,7 +388,7 @@ jobs:
           output-file: sbom.spdx.json
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: build/release/sbom.spdx.json
