@@ -27,7 +27,7 @@ jobs:
         run: doxygen Doxyfile
 
       - name: Upload Doxygen artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: doxygen-docs
           path: docs/doxygen/html/
@@ -58,7 +58,7 @@ jobs:
           make html
 
       - name: Upload Sphinx artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: sphinx-docs
           path: docs/sphinx/_build/html/
