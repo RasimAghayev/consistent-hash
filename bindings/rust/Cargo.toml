@@ -1,0 +1,33 @@
+[package]
+name = "consistent-hash"
+version = "1.0.0"
+edition = "2021"
+description = "Modern C++20 Consistent Hashing Library - Rust Bindings"
+license = "MIT"
+repository = "https://github.com/consistent-hash/consistent-hash"
+authors = ["Consistent Hash Contributors"]
+categories = ["data-structures", "distributed-systems", "external-ffi-bindings"]
+keywords = ["consistent-hashing", "distributed-systems", "load-balancing", "cxx"]
+
+[dependencies]
+cxx = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+parking_lot = "0.12"
+once_cell = "1.17"
+
+[build-dependencies]
+cxx-build = "1.0"
+
+[features]
+default = ["std"]
+std = []
+
+[lib]
+name = "consistent_hash"
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+lto = true
+codegen-units = 1

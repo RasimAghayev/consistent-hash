@@ -17,6 +17,11 @@ public:
   explicit PercentileCalculator(size_t max_samples = 10000)
       : max_samples_(max_samples) {}
 
+  PercentileCalculator(const PercentileCalculator&) = delete;
+  PercentileCalculator& operator=(const PercentileCalculator&) = delete;
+  PercentileCalculator(PercentileCalculator&&) = delete;
+  PercentileCalculator& operator=(PercentileCalculator&&) = delete;
+
   void record(double value) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (samples_.size() >= max_samples_) {
@@ -31,7 +36,7 @@ public:
       return 0.0;
     std::vector<double> sorted = samples_;
     std::sort(sorted.begin(), sorted.end());
-    const size_t idx = static_cast<size_t>(std::ceil(p * sorted.size())) - 1;
+    const size_t idx = static_cast<size_t>(std::ceil(p * static_cast<double>(sorted.size()))) - 1;
     return sorted[std::min(idx, sorted.size() - 1)];
   }
 
@@ -83,6 +88,11 @@ public:
   explicit Metrics(size_t max_samples = 10000)
       : latencies_(max_samples), hash_quality_samples_(1000) {}
 
+  Metrics(const Metrics&) = delete;
+  Metrics& operator=(const Metrics&) = delete;
+  Metrics(Metrics&&) = delete;
+  Metrics& operator=(Metrics&&) = delete;
+
   void record_lookup(std::chrono::nanoseconds duration) {
     latencies_.record(static_cast<double>(duration.count()));
   }
@@ -130,11 +140,11 @@ public:
       total_bit_diff += static_cast<double>(__builtin_popcountll(diff));
     }
     qm.total_collisions = collisions;
-    qm.collision_rate = static_cast<double>(collisions) / qm.sample_count;
+    qm.collision_rate = static_cast<double>(collisions) / static_cast<double>(qm.sample_count);
     // Avalanche effect: average fraction of 64 bits that differ per sample
     // Ideal is 32/64 = 0.5 (each input bit flip should flip ~50% of output
     // bits)
-    qm.avalanche_effect = total_bit_diff / (64.0 * qm.sample_count);
+    qm.avalanche_effect = total_bit_diff / (64.0 * static_cast<double>(qm.sample_count));
 
     // Simple bias score: deviation from expected collision rate (1/2^64 for
     // 64-bit)

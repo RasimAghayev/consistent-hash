@@ -5,6 +5,8 @@ project(consistent_hash LANGUAGES CXX VERSION 1.0.0)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(CheckCXXCompilerFlag)
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -20,60 +22,13 @@ option(CONSISTENT_HASH_ENABLE_SANITIZERS "Enable sanitizers in Debug builds" OFF
 option(CONSISTENT_HASH_ENABLE_COVERAGE "Enable code coverage reporting" OFF)
 option(CONSISTENT_HASH_BUILD_FUZZERS "Build libFuzzer targets" OFF)
 option(CONSISTENT_HASH_BUILD_PROPERTY_TESTS "Build RapidCheck property-based tests" OFF)
+option(CONSISTENT_HASH_ENABLE_SIMD "Enable SIMD-accelerated hashing (AVX2/SSE4.2/NEON)" ON)
+option(CONSISTENT_HASH_ENABLE_HEALTH_CHECKS "Enable health checking integration" ON)
+option(CONSISTENT_HASH_ENABLE_LOCKFREE "Enable lock-free read path" ON)
+option(CONSISTENT_HASH_BUILD_CHAOS_TESTS "Build chaos testing framework" OFF)
 
-# Base compile options for all targets
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(
-        -Wall -Wextra -Wpedantic -Werror
-        -Wformat=2 -Wformat-security
-        -Wcast-align -Wcast-qual
-        -Wconversion -Wsign-conversion
-        -Wnull-dereference -Wdouble-promotion
-        -Wshadow -Wold-style-cast
-        -Wnon-virtual-dtor -Woverloaded-virtual
-        -Wsuggest-override -Wsuggest-final-types
-        -Wduplicated-cond -Wduplicated-branches
-        -Wlogical-op -Wuseless-cast
-    )
-    # Hardening flags (not in Debug to avoid performance impact)
-    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-        add_compile_options(
-            -fstack-protector-strong
-            -D_FORTIFY_SOURCE=2
-            -fstack-clash-protection
-            -fcf-protection=full
-        )
-        add_link_options(
-            -Wl,-z,relro,-z,now
-            -Wl,-z,noexecstack
-        )
-    endif()
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    add_compile_options(/W4 /WX /permissive- /guard:cf /sdl)
-    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-        add_link_options(/DYNAMICBASE:NO /NXCOMPAT /SAFESEH)
-    endif()
-endif()
-
-# Sanitizers in Debug
-if(CONSISTENT_HASH_ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
-        add_link_options(-fsanitize=address,undefined)
-    endif()
-endif()
-
-# Code coverage instrumentation
-if(CONSISTENT_HASH_ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(--coverage -O0 -g)
-    add_link_options(--coverage)
-endif()
-
-# libFuzzer support
-if(CONSISTENT_HASH_BUILD_FUZZERS AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    add_compile_options(-fsanitize=fuzzer,address -fno-omit-frame-pointer)
-    add_link_options(-fsanitize=fuzzer,address)
-endif()
+# SIMD-accelerated hashing - configure after target definition
+# (will be applied to consistent_hash_impl target below)
 
 # Header-only interface target
 add_library(consistent_hash INTERFACE)
@@ -89,8 +44,8 @@ if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     target_link_options(consistent_hash INTERFACE -pthread)
 endif()
 
-# Implementation target (NodeManager non-inline bits)
-add_library(consistent_hash_impl STATIC src/consistent_hash.cpp)
+# Implementation target (NodeManager non-inline bits + SIMD hashing)
+add_library(consistent_hash_impl STATIC src/consistent_hash.cpp src/simd_hash.cpp)
 target_include_directories(consistent_hash_impl
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
@@ -98,6 +53,88 @@ target_include_directories(consistent_hash_impl
 )
 target_compile_features(consistent_hash_impl PRIVATE cxx_std_20)
 target_link_libraries(consistent_hash_impl PUBLIC consistent_hash)
+
+# Apply strict warnings only to our targets
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(consistent_hash_impl PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+        -Wformat=2 -Wformat-security
+        -Wcast-align -Wcast-qual
+        -Wconversion -Wsign-conversion
+        -Wdouble-promotion
+        -Wshadow -Wold-style-cast
+        -Wnon-virtual-dtor -Woverloaded-virtual
+        -Wsuggest-override
+        -Wduplicated-cond -Wduplicated-branches
+        -Wlogical-op -Wuseless-cast
+    )
+    # Hardening flags (not in Debug to avoid performance impact)
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+        target_compile_options(consistent_hash_impl PRIVATE
+            -fstack-protector-strong
+            -D_FORTIFY_SOURCE=2
+            -fstack-clash-protection
+            -fcf-protection=full
+        )
+        target_link_options(consistent_hash_impl PRIVATE
+            -Wl,-z,relro,-z,now
+            -Wl,-z,noexecstack
+        )
+    endif()
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(consistent_hash_impl PRIVATE /W4 /WX /permissive- /guard:cf /sdl)
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+        target_link_options(consistent_hash_impl PRIVATE /DYNAMICBASE:NO /NXCOMPAT /SAFESEH)
+    endif()
+endif()
+
+# Sanitizers in Debug
+if(CONSISTENT_HASH_ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(consistent_hash_impl PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(consistent_hash_impl PRIVATE -fsanitize=address,undefined)
+    endif()
+endif()
+
+# Code coverage instrumentation
+if(CONSISTENT_HASH_ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(consistent_hash_impl PRIVATE --coverage -O0 -g)
+    target_link_options(consistent_hash_impl PRIVATE --coverage)
+endif()
+
+# libFuzzer support
+if(CONSISTENT_HASH_BUILD_FUZZERS AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_options(consistent_hash_impl PRIVATE -fsanitize=fuzzer,address -fno-omit-frame-pointer)
+    target_link_options(consistent_hash_impl PRIVATE -fsanitize=fuzzer,address)
+endif()
+
+# SIMD-accelerated hashing configuration
+if(CONSISTENT_HASH_ENABLE_SIMD AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
+        # Check for AVX2 support
+        check_cxx_compiler_flag("-mavx2" HAS_AVX2)
+        check_cxx_compiler_flag("-msse4.2" HAS_SSE42)
+        if(HAS_AVX2)
+            target_compile_options(consistent_hash_impl PRIVATE -mavx2 -mfma)
+            target_compile_definitions(consistent_hash_impl PRIVATE CONSISTENT_HASH_HAS_AVX2=1)
+        elseif(HAS_SSE42)
+            target_compile_options(consistent_hash_impl PRIVATE -msse4.2)
+            target_compile_definitions(consistent_hash_impl PRIVATE CONSISTENT_HASH_HAS_SSE42=1)
+        endif()
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        # NEON is baseline on ARMv8
+        target_compile_definitions(consistent_hash_impl PRIVATE CONSISTENT_HASH_HAS_NEON=1)
+    endif()
+endif()
+
+# Health checking and lock-free features
+if(CONSISTENT_HASH_ENABLE_HEALTH_CHECKS)
+    target_compile_definitions(consistent_hash_impl PRIVATE CONSISTENT_HASH_HAS_HEALTH=1)
+endif()
+
+if(CONSISTENT_HASH_ENABLE_LOCKFREE)
+    target_compile_definitions(consistent_hash_impl PRIVATE CONSISTENT_HASH_HAS_LOCKFREE=1)
+endif()
 
 # Fetch GoogleTest and Google Benchmark
 include(FetchContent)
@@ -117,6 +154,10 @@ if(CONSISTENT_HASH_BUILD_TESTS)
         tests/unit/test_multiprobe.cpp
         tests/unit/test_bounded_loads.cpp
         tests/unit/test_node_manager.cpp
+        tests/unit/test_lockfree.cpp
+        tests/unit/test_ketama_anchor.cpp
+        tests/unit/test_health.cpp
+        tests/unit/test_chaos.cpp
         tests/property/test_distribution.cpp
         tests/integration/test_demos.cpp)
     target_link_libraries(consistent_hash_tests PRIVATE consistent_hash_impl GTest::gtest_main)

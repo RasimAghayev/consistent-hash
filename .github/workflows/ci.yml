@@ -8,6 +8,10 @@ on:
   schedule:
     # Weekly fuzzing run
     - cron: '0 2 * * 0'
+    # Weekly chaos testing
+    - cron: '0 3 * * 1'
+    # Weekly mutation testing
+    - cron: '0 4 * * 2'
 
 env:
   CMAKE_BUILD_TYPE: Release
@@ -127,6 +131,15 @@ jobs:
 
       - name: Run Tests
         run: ctest --test-dir build/${{ matrix.build_type == 'Debug' && 'debug' || 'release' }} --output-on-failure --parallel 4
+
+      - name: Run Property Tests
+        if: matrix.build_type == 'Release' && runner.os == 'Linux'
+        run: ctest --test-dir build/release --output-on-failure --parallel 4 -R Property
+
+      - name: Run Chaos Tests
+        if: matrix.build_type == 'Release' && runner.os == 'Linux' && github.event_name == 'schedule'
+        run: |
+          ctest --test-dir build/release --output-on-failure --parallel 1 -R Chaos || true
 
       - name: Upload Test Artifacts (Debug)
         if: matrix.build_type == 'Debug' && always()
@@ -269,6 +282,74 @@ jobs:
           cd build/clang-tidy
           run-clang-tidy-18.py -p . -header-filter=.*/include/.* -quiet 2>&1 | head -200
 
+  mutation:
+    name: Mutation Testing (mull)
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install mull
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/mull-project/mull/main/scripts/install.sh | bash -s -- --version 0.14.0
+          echo "$HOME/.mull/bin" >> $GITHUB_PATH
+
+      - name: Setup CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Configure with mull
+        run: |
+          cmake -S . -B build/mull \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCONSISTENT_HASH_BUILD_TESTS=ON \
+            -DCONSISTENT_HASH_BUILD_BENCHMARKS=OFF \
+            -DCONSISTENT_HASH_BUILD_EXAMPLES=OFF \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_CXX_FLAGS="-fexperimental-new-pass-manager -g -O0"
+
+      - name: Build for mull
+        run: cmake --build build/mull --parallel 4
+
+      - name: Run mutation testing
+        run: |
+          cd build/mull
+          mull-cxx --test-framework=GoogleTest --workers=4 \
+            --ide-reporter-show-killed --ide-reporter-show-survived \
+            --reporters=IDE,SQLite \
+            --sqlite-output=mull_results.sqlite \
+            ./bin/consistent_hash_tests
+
+      - name: Upload mutation results
+        uses: actions/upload-artifact@v5
+        with:
+          name: mull-results
+          path: build/mull/mull_results.sqlite
+          if-no-files-found: ignore
+
+      - name: Comment mutation score on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const sqlite3 = require('sqlite3').verbose();
+            const db = new sqlite3.Database('build/mull/mull_results.sqlite');
+            db.all("SELECT COUNT(*) as total, SUM(CASE WHEN status = 'Killed' THEN 1 ELSE 0 END) as killed FROM mutation_results", (err, rows) => {
+              if (err) throw err;
+              const total = rows[0].total;
+              const killed = rows[0].killed;
+              const score = total > 0 ? ((killed / total) * 100).toFixed(2) : '0.00';
+              const body = `## Mutation Testing Report\n\n**Mutation Score: ${score}%** (${killed}/${total} mutants killed)\n\n<details><summary>Full mull output</summary>\n\n\`\`\`\nTotal mutants: ${total}\nKilled: ${killed}\nSurvived: ${total - killed}\n\`\`\`\n\n</details>`;
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            });
+
   fuzz:
     name: Fuzzing (libFuzzer)
     runs-on: ubuntu-22.04
@@ -313,6 +394,258 @@ jobs:
           path: build/fuzz/*.json
           if-no-files-found: ignore
 
+  chaos:
+    name: Chaos Testing
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Configure with chaos tests
+        run: |
+          cmake -S . -B build/chaos \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCONSISTENT_HASH_BUILD_TESTS=ON \
+            -DCONSISTENT_HASH_BUILD_CHAOS_TESTS=ON \
+            -DCONSISTENT_HASH_BUILD_BENCHMARKS=OFF \
+            -DCONSISTENT_HASH_BUILD_EXAMPLES=OFF
+
+      - name: Build chaos tests
+        run: cmake --build build/chaos --parallel 4
+
+      - name: Run chaos experiments
+        run: |
+          cd build/chaos
+          ctest --test-dir . --output-on-failure --parallel 1 -R Chaos || true
+
+      - name: Upload chaos results
+        uses: actions/upload-artifact@v5
+        with:
+          name: chaos-results
+          path: build/chaos/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+
+  benchmark-regression:
+    name: Benchmark Regression Detection
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Configure benchmarks
+        run: |
+          cmake -S . -B build/bench \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCONSISTENT_HASH_BUILD_BENCHMARKS=ON \
+            -DCONSISTENT_HASH_BUILD_TESTS=OFF \
+            -DCONSISTENT_HASH_BUILD_EXAMPLES=OFF
+
+      - name: Build benchmarks
+        run: cmake --build build/bench --parallel 4
+
+      - name: Run benchmarks
+        run: |
+          cd build/bench
+          ./bin/consistent_hash_benchmarks --benchmark_out=benchmarks.json --benchmark_out_format=json
+
+      - name: Compare with baseline
+        run: |
+          python3 -c "
+import json
+import sys
+
+with open('build/bench/benchmarks.json') as f:
+    current = json.load(f)
+
+# Load baseline from main branch
+import subprocess
+subprocess.run(['git', 'fetch', 'origin', 'main'], check=True)
+subprocess.run(['git', 'checkout', 'origin/main', '--', 'benchmarks_baseline.json'], check=True)
+
+with open('benchmarks_baseline.json') as f:
+    baseline = json.load(f)
+
+regressions = []
+for curr in current['benchmarks']:
+    base = next((b for b in baseline['benchmarks'] if b['name'] == curr['name']), None)
+    if base:
+        ratio = curr['real_time'] / base['real_time']
+        if ratio > 1.1:  # 10% regression threshold
+            regressions.append({
+                'name': curr['name'],
+                'current': curr['real_time'],
+                'baseline': base['real_time'],
+                'ratio': ratio
+            })
+
+if regressions:
+    print('BENCHMARK REGRESSIONS DETECTED:')
+    for r in regressions:
+        print(f\"  {r['name']}: {r['current']:.2f} vs {r['baseline']:.2f} ({r['ratio']:.2%} slower)\")
+    sys.exit(1)
+else:
+    print('No benchmark regressions detected')
+    # Update baseline
+    import shutil
+    shutil.copy('build/bench/benchmarks.json', 'benchmarks_baseline.json')
+"
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v5
+        with:
+          name: benchmark-results
+          path: build/bench/benchmarks.json
+          if-no-files-found: ignore
+
+  python-bindings:
+    name: Python Bindings
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pybind11 scikit-build-core pytest pytest-benchmark
+
+      - name: Build Python bindings
+        run: |
+          cd bindings/python
+          pip install -v . --no-build-isolation
+
+      - name: Test Python bindings
+        run: |
+          cd bindings/python
+          python -c "
+import consistent_hash
+h = consistent_hash.RingHasher()
+h.add_node('node1', '10.0.0.1:11211', 100)
+h.add_node('node2', '10.0.0.2:11211', 100)
+result = h.lookup('test-key')
+print(f'Lookup result: {result}')
+assert result in ['node1', 'node2']
+
+# Test lock-free
+lf = consistent_hash.make_lockfree(consistent_hash.RingHasher())
+lf.add_node_atomic('node3', '10.0.0.3:11211', 100)
+print(f'Lock-free lookup: {lf.lookup(\"test\")}')
+print('Python bindings test passed!')
+"
+
+      - name: Upload Python wheel
+        uses: actions/upload-artifact@v5
+        with:
+          name: python-wheel
+          path: bindings/python/dist/*.whl
+          if-no-files-found: ignore
+
+  go-bindings:
+    name: Go Bindings
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc g++
+          cd bindings/go
+          go mod tidy
+
+      - name: Build Go bindings
+        run: |
+          cd bindings/go
+          CGO_ENABLED=1 go build ./...
+
+      - name: Test Go bindings
+        run: |
+          cd bindings/go
+          go test -v ./...
+
+  rust-bindings:
+    name: Rust Bindings
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: actions/setup-rust@v1
+        with:
+          profile: minimal
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang libclang-dev
+
+      - name: Build Rust bindings
+        run: |
+          cd bindings/rust
+          cargo build --release
+
+      - name: Test Rust bindings
+        run: |
+          cd bindings/rust
+          cargo test --release
+
+  cli-tool:
+    name: CLI Tool
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Configure CLI
+        run: |
+          cmake -S examples/cli -B build/cli \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build CLI
+        run: cmake --build build/cli --parallel 4
+
+      - name: Test CLI
+        run: |
+          cd build/cli
+          ./chash --help
+          ./chash --algorithm ring --nodes "node1:10.0.0.1:100,node2:10.0.0.2:100" inspect --stats
+          ./chash --algorithm jump --nodes "node1:10.0.0.1:100,node2:10.0.0.2:100" benchmark --duration 2 --threads 2
+
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@v5
+        with:
+          name: cli-tool
+          path: build/cli/chash
+          if-no-files-found: ignore
+
   docker-build:
     name: Docker Multi-arch Build
     runs-on: ubuntu-22.04
@@ -350,7 +683,7 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-22.04
-    needs: [build-and-test, sanitize, clang-tidy, docker-build, coverage, fuzz, codeql]
+    needs: [build-and-test, sanitize, clang-tidy, docker-build, coverage, fuzz, chaos, mutation, benchmark-regression, codeql]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write

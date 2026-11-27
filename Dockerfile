@@ -25,7 +25,9 @@ COPY benchmarks/ benchmarks/
 RUN cmake --preset release && cmake --build build/release --parallel $(nproc)
 
 # Stage 2: Runtime stage with minimal image
-FROM ubuntu:22.04 AS runtime
+# Use a base whose libstdc++ is new enough for the gcc-13-built binaries
+# (ubuntu 22.04 ships libstdc++ 12, which lacks GLIBCXX_3.4.32).
+FROM ubuntu:24.04 AS runtime
 
 # Install only runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -33,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for security
-RUN useradd --system --no-create-home --uid 1000 appuser
+RUN useradd --system --no-create-home --uid 1001 appuser
 
 WORKDIR /app
 

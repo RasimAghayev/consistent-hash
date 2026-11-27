@@ -11,7 +11,7 @@
 [![Release](https://img.shields.io/github/v/release/RasimAghayev/consistent-hash)](https://github.com/RasimAghayev/consistent-hash/releases)
 [![Docker](https://img.shields.io/docker/pulls/rasimaghayev/consistent-hash)](https://hub.docker.com/r/rasimaghayev/consistent-hash)
 
-A modern, thread-safe, header-only C++20 consistent hashing library providing six algorithms for distributed systems.
+A modern, thread-safe, header-only C++20 consistent hashing library providing eight algorithms for distributed systems.
 
 ## Features
 
@@ -35,6 +35,8 @@ A modern, thread-safe, header-only C++20 consistent hashing library providing si
 | **Maglev** | O(1) lookup | Network load balancing | Google Maglev, consistent permutation |
 | **Multi-Probe** | O(log N + P) | Bounded load with probes | Multiple probe strategies |
 | **Bounded Loads** | O(log N) | Strict capacity enforcement | Hard per-node limits |
+| **Ketama** | O(log N) | Memcached compatibility | 160 points/node, MD5-based |
+| **Anchor** | O(log N) | Minimal disruption | Google Anchor Hash, O(1) add/remove |
 
 ## Quick Start
 
@@ -172,6 +174,114 @@ registry.prometheus_exporter()->register_metrics("ring_hasher", &hasher, {
 // Export metrics
 std::string metrics = registry.export_prometheus();
 // Serve via HTTP endpoint
+```
+
+## Advanced Features
+
+### SIMD-Accelerated Hashing
+
+Runtime-dispatched SIMD hashing with automatic CPU feature detection:
+
+```cpp
+#include <consistent_hash/simd_hash.hpp>
+
+// Automatic selection (HighwayHash on AVX2, xxHash3 on SSE4.2, FNV-1a fallback)
+consistent_hash::simd::AdaptiveHasher hasher;
+auto hash = hasher("my-key");
+
+// Or explicit selection
+consistent_hash::simd::HighwayHash hh;     // Requires AVX2
+consistent_hash::simd::XxHash3 xxh3;       // Requires SSE4.2
+consistent_hash::simd::Fnv1a fnv1a;        // Scalar fallback
+
+// Batch hashing
+std::vector<std::string_view> keys = {"key1", "key2", "key3"};
+std::vector<uint64_t> hashes(3);
+hasher.hash_batch(keys.data(), hashes.data(), 3);
+```
+
+### Lock-Free Read Path
+
+Zero-lock concurrent reads using epoch-based reclamation:
+
+```cpp
+#include <consistent_hash/lockfree.hpp>
+
+consistent_hash::RingHasher<> base_hasher;
+base_hasher.add_node("node1", 100);
+base_hasher.add_node("node2", 100);
+
+// Wrap any hasher for lock-free reads
+auto lf_hasher = consistent_hash::make_lockfree(std::move(base_hasher));
+
+// Readers never block - zero mutex contention
+auto node = lf_hasher.lookup("key");           // Lock-free
+auto nodes = lf_hasher.lookup_n("key", 3);     // Lock-free
+auto bulk = lf_hasher.lookup_bulk(keys);       // Lock-free
+
+// Writers use copy-on-write with versioning
+lf_hasher.add_node_atomic("node3", 100);       // Lock-free atomic add
+lf_hasher.remove_node_atomic("node1");         // Lock-free atomic remove
+
+// Versioned snapshots for rollback
+auto snapshot = lf_hasher.create_snapshot();
+lf_hasher.add_node_atomic("node4", 100);
+lf_hasher.restore_snapshot(std::move(snapshot)); // Rollback
+```
+
+### Health Checking & Passive Failure Detection
+
+```cpp
+#include <consistent_hash/health.hpp>
+
+// Configure health checks
+consistent_hash::health::HealthChecker health;
+health.register_node("node1", [](const std::string&, std::string&, auto timeout) {
+    return http_health_check("http://node1/health", timeout);
+}, 5s, 2s, 3, 2);
+
+// Start background health checks
+health.start();
+
+// Health-aware hasher filters unhealthy nodes
+auto healthy_hasher = consistent_hash::make_health_aware(
+    std::move(ring_hasher), health);
+
+// Passive error tracking from operations
+healthy_hasher.record_lookup_result("node1", false, "timeout");
+```
+
+### Dynamic Reconfiguration
+
+Atomic, lock-free node management with versioned snapshots:
+
+```cpp
+// Atomic operations with automatic versioning
+lf_hasher.add_node_atomic("new-node", 100);
+lf_hasher.remove_node_atomic("old-node");
+lf_hasher.update_weight_atomic("node1", 200);
+
+// Get current version
+uint64_t version = lf_hasher.version();
+
+// Create snapshot for backup/rollback
+auto snapshot = lf_hasher.create_snapshot();
+// ... perform risky operation ...
+lf_hasher.restore_snapshot(std::move(snapshot)); // Automatic rollback
+```
+
+### Ketama & Anchor Hashing
+
+```cpp
+#include <consistent_hash/ketama_anchor.hpp>
+
+// Memcached-compatible Ketama hashing
+consistent_hash::KetamaHasher<> ketama;
+ketama.add_node("cache-1", 100);  // 160 points/node
+
+// Minimal-disruption Anchor hashing
+consistent_hash::AnchorHasher<> anchor;
+anchor.add_node("node1", 100);    // <20% key movement on changes
 ```
 
 ## Contributing

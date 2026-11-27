@@ -74,7 +74,7 @@ public:
   
   // Record distribution stats
   virtual void record_distribution(std::string_view algorithm,
-                                   const DistributionStats& stats) = 0;
+                                   const DistributionStatsBase& stats) = 0;
   
   // Shutdown and flush
   virtual void shutdown() = 0;
@@ -95,7 +95,7 @@ public:
                              std::string_view) override {}
   void record_migration(std::string_view, std::string_view, std::string_view) override {}
   void record_hash_quality(std::string_view, const HashQualityMetrics&) override {}
-  void record_distribution(std::string_view, const DistributionStats&) override {}
+  void record_distribution(std::string_view, const DistributionStatsBase&) override {}
   void shutdown() override {}
 };
 
@@ -155,8 +155,8 @@ private:
 // Built-in Prometheus exporter that collects from Metrics objects
 class BuiltinPrometheusExporter : public PrometheusMetricsExporter {
 public:
-  explicit BuiltinPrometheusExporter(std::string_view namespace_ = "consistent_hash")
-      : namespace_(namespace_) {}
+  explicit BuiltinPrometheusExporter(std::string_view ns = "consistent_hash")
+      : namespace_(ns) {}
   
   // Register a metrics source with labels
   void register_metrics(std::string_view name,
@@ -202,7 +202,7 @@ public:
       output += format_counter(
         namespace_ + "_migrations_total",
         "Total number of node migrations",
-        snapshot.migration_count,
+        static_cast<double>(snapshot.migration_count),
         source.labels
       );
       
@@ -271,8 +271,9 @@ private:
   std::string namespace_;
   
   static uint64_t current_timestamp_ms() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count();
+    return static_cast<uint64_t>(ms);
   }
   
   static std::string format_histogram(std::string_view name,

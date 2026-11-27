@@ -1,0 +1,70 @@
+[build-system]
+requires = ["pybind11>=2.10", "cmake>=3.25", "ninja", "scikit-build-core>=0.9"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "consistent-hash"
+version = "1.0.0"
+description = "Modern C++20 Consistent Hashing Library - Python Bindings"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Consistent Hash Contributors", email = "consistent-hash@example.com"}
+]
+maintainers = [
+    {name = "Consistent Hash Contributors", email = "consistent-hash@example.com"}
+]
+keywords = ["consistent-hashing", "distributed-systems", "load-balancing", "c++", "pybind11"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: C++",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Distributed Computing",
+]
+requires-python = ">=3.8"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-benchmark>=4.0", "black>=23.0", "mypy>=1.0"]
+docs = ["sphinx>=6.0", "sphinx-rtd-theme>=1.0", "breathe>=4.0"]
+
+[tool.scikit-build]
+cmake.minimum-version = "3.25"
+cmake.args = [
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DCONSISTENT_HASH_BUILD_TESTS=OFF",
+    "-DCONSISTENT_HASH_BUILD_BENCHMARKS=OFF",
+    "-DCONSISTENT_HASH_BUILD_EXAMPLES=OFF",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["consistent_hash*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"

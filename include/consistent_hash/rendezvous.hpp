@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <shared_mutex>
@@ -31,30 +32,57 @@ public:
   using Result = typename Base::Result;
   using ErrorCode = typename Base::ErrorCode;
 
-  RendezvousHasher() : hasher_{} {
+  RendezvousHasher()
+      : mutex_(std::make_shared<std::shared_mutex>()),
+        metrics_(std::make_shared<Metrics>()),
+        hasher_{} {
     probe_keys_.reserve(1000);
     for (size_t i = 0; i < 1000; ++i) {
       probe_keys_.push_back(Key("probe:" + std::to_string(i)));
     }
   }
 
+  // Allow copying for LockFreeHasher
+  RendezvousHasher(const RendezvousHasher& other)
+      : nodes_(other.nodes_),
+        last_assignment_(other.last_assignment_),
+        probe_keys_(other.probe_keys_),
+        mutex_(std::make_shared<std::shared_mutex>()),
+        metrics_(std::make_shared<Metrics>()),
+        hasher_(other.hasher_) {}
+
+  RendezvousHasher& operator=(const RendezvousHasher& other) {
+    if (this != &other) {
+      std::unique_lock<std::shared_mutex> lock(*mutex_);
+      std::shared_lock<std::shared_mutex> other_lock(*other.mutex_);
+      nodes_ = other.nodes_;
+      last_assignment_ = other.last_assignment_;
+      probe_keys_ = other.probe_keys_;
+      hasher_ = other.hasher_;
+    }
+    return *this;
+  }
+
+  RendezvousHasher(RendezvousHasher&&) = default;
+  RendezvousHasher& operator=(RendezvousHasher&&) = default;
+
   void add_node(const NodeType &node) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     upsert_node_unlocked(node);
   }
 
   bool upsert_node(const NodeType &node) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     return upsert_node_unlocked(node);
   }
 
   void remove_node(const NodeId &id) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     nodes_.erase(id);
   }
 
   Result update_weight(const NodeId &id, uint32_t weight) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     auto it = nodes_.find(id);
     if (it == nodes_.end()) {
       return Result{ErrorCode::NodeNotFound, "Node not found: " + id};
@@ -67,17 +95,17 @@ public:
   }
 
   bool has_node(const NodeId &id) const noexcept override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return nodes_.find(id) != nodes_.end();
   }
 
   std::optional<NodeId> lookup(const Key &key) const override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return lookup_opt_unlocked(key);
   }
 
   NodeId lookup_or_throw(const Key &key) const override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     if (auto opt = lookup_opt_unlocked(key); opt) {
       return *opt;
     }
@@ -85,7 +113,7 @@ public:
   }
 
   std::vector<NodeId> lookup_n(const Key &key, size_t n) const override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     std::vector<NodeId> result;
     if (nodes_.empty() || n == 0)
       return result;
@@ -116,7 +144,7 @@ public:
 
   std::vector<std::optional<NodeId>>
   lookup_bulk(const std::vector<Key> &keys) const override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     std::vector<std::optional<NodeId>> results;
     results.reserve(keys.size());
     for (const auto &k : keys) {
@@ -126,29 +154,29 @@ public:
   }
 
   std::vector<MigrationType> rebalance() override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     return rebalance_locked();
   }
 
   StatsType stats() const noexcept override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return compute_stats_locked();
   }
 
   size_t node_count() const noexcept override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return nodes_.size();
   }
 
   void clear() noexcept override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     nodes_.clear();
     last_assignment_.clear();
-    metrics_.clear();
+    metrics_->clear();
   }
 
   std::string serialize() const override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     std::string result = "{";
     result += "\"nodes\":[";
     bool first = true;
@@ -168,7 +196,7 @@ public:
   }
 
   Result deserialize([[maybe_unused]] std::string_view data) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     clear();
     return Result{ErrorCode::InvalidArgument,
                   "Deserialization not fully implemented; use JSON library"};
@@ -200,7 +228,7 @@ private:
       }
     }
     last_assignment_ = std::move(current);
-    metrics_.record_migrations(static_cast<uint64_t>(migrations.size()));
+    metrics_->record_migrations(static_cast<uint64_t>(migrations.size()));
     return migrations;
   }
 
@@ -230,7 +258,7 @@ private:
 
   StatsType compute_stats_locked() const {
     StatsType s;
-    auto snap = metrics_.snapshot();
+    auto snap = metrics_->snapshot();
     s.migration_count = snap.migration_count;
     s.avg_lookup_ns = snap.avg_lookup_ns;
     s.p50_lookup_ns = snap.p50_lookup_ns;
@@ -256,8 +284,8 @@ private:
   std::map<NodeId, NodeType> nodes_;
   std::map<Key, NodeId> last_assignment_;
   std::vector<Key> probe_keys_;
-  Metrics metrics_;
-  mutable std::shared_mutex mutex_;
+  std::shared_ptr<Metrics> metrics_;
+  mutable std::shared_ptr<std::shared_mutex> mutex_;
   Hasher hasher_;
 };
 

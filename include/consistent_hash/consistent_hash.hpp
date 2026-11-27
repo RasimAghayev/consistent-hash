@@ -13,6 +13,9 @@
 #include "consistent_hash/hash.hpp"
 #include "consistent_hash/types.hpp"
 #include "consistent_hash/observability.hpp"
+#include "consistent_hash/lockfree.hpp"
+#include "consistent_hash/ketama_anchor.hpp"
+#include "consistent_hash/health.hpp"
 
 namespace consistent_hash {
 
@@ -278,6 +281,33 @@ requires KeyType<std::ranges::range_value_t<Range>>
       [](const auto &a, const auto &b) { return a.second < b.second; });
 
   return {min_it->first, max_it->first};
+}
+
+} // namespace consistent_hash
+
+// Factory functions for creating enhanced hashers
+namespace consistent_hash {
+
+// Create a lock-free read-optimized hasher from any hasher type
+template <typename Hasher>
+lockfree::LockFreeHasher<Hasher> make_lockfree(Hasher hasher) {
+  return lockfree::LockFreeHasher<Hasher>(std::move(hasher));
+}
+
+// Create a health-aware hasher from any hasher type
+template <typename Hasher>
+health::HealthAwareHasher<Hasher> make_health_aware(Hasher hasher,
+                                                     std::shared_ptr<health::HealthChecker> health) {
+  return health::HealthAwareHasher<Hasher>(std::move(hasher), std::move(health));
+}
+
+// Create a health-aware lock-free hasher (both optimizations)
+template <typename Hasher>
+lockfree::LockFreeHasher<health::HealthAwareHasher<Hasher>>
+make_lockfree_health_aware(Hasher hasher,
+                           std::shared_ptr<health::HealthChecker> health) {
+  return lockfree::LockFreeHasher<health::HealthAwareHasher<Hasher>>(
+      health::HealthAwareHasher<Hasher>(std::move(hasher), std::move(health)));
 }
 
 } // namespace consistent_hash
