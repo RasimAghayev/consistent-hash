@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <shared_mutex>
@@ -33,7 +34,9 @@ public:
 
   explicit RingHasher(size_t virtual_nodes_per_node = 150)
       : vnodes_per_node_(virtual_nodes_per_node == 0 ? 1
-                                                     : virtual_nodes_per_node),
+                                                      : virtual_nodes_per_node),
+        mutex_(std::make_shared<std::shared_mutex>()),
+        metrics_(std::make_shared<Metrics>()),
         hasher_{} {
     probe_keys_.reserve(1000);
     for (size_t i = 0; i < 1000; ++i) {
@@ -41,25 +44,55 @@ public:
     }
   }
 
+  // Allow copying for LockFreeHasher
+  RingHasher(const RingHasher& other)
+      : ring_(other.ring_),
+        nodes_(other.nodes_),
+        last_assignment_(other.last_assignment_),
+        probe_keys_(other.probe_keys_),
+        vnodes_per_node_(other.vnodes_per_node_),
+        preferred_zone_(other.preferred_zone_),
+        mutex_(std::make_shared<std::shared_mutex>()),
+        metrics_(std::make_shared<Metrics>()),
+        hasher_(other.hasher_) {}
+
+  RingHasher& operator=(const RingHasher& other) {
+    if (this != &other) {
+      std::unique_lock<std::shared_mutex> lock(*mutex_);
+      std::shared_lock<std::shared_mutex> other_lock(*other.mutex_);
+      ring_ = other.ring_;
+      nodes_ = other.nodes_;
+      last_assignment_ = other.last_assignment_;
+      probe_keys_ = other.probe_keys_;
+      vnodes_per_node_ = other.vnodes_per_node_;
+      preferred_zone_ = other.preferred_zone_;
+      hasher_ = other.hasher_;
+    }
+    return *this;
+  }
+
+  RingHasher(RingHasher&&) = default;
+  RingHasher& operator=(RingHasher&&) = default;
+
   void add_node(const NodeType &node) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     add_node_unlocked(node);
   }
 
   bool upsert_node(const NodeType &node) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     const bool is_new = nodes_.find(node.id) == nodes_.end();
     add_node_unlocked(node);
     return is_new;
   }
 
   void remove_node(const NodeId &id) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     remove_node_locked(id);
   }
 
   Result update_weight(const NodeId &id, uint32_t weight) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     auto it = nodes_.find(id);
     if (it == nodes_.end()) {
       return Result{ErrorCode::NodeNotFound, "Node not found: " + id};
@@ -73,17 +106,17 @@ public:
   }
 
   bool has_node(const NodeId &id) const noexcept override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return nodes_.find(id) != nodes_.end();
   }
 
   std::optional<NodeId> lookup(const Key &key) const override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return lookup_opt_unlocked(key);
   }
 
   NodeId lookup_or_throw(const Key &key) const override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     if (auto opt = lookup_opt_unlocked(key); opt) {
       return *opt;
     }
@@ -91,13 +124,13 @@ public:
   }
 
   std::vector<NodeId> lookup_n(const Key &key, size_t n) const override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return lookup_n_unlocked(key, n);
   }
 
   std::vector<std::optional<NodeId>>
   lookup_bulk(const std::vector<Key> &keys) const override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     std::vector<std::optional<NodeId>> results;
     results.reserve(keys.size());
     for (const auto &k : keys) {
@@ -107,30 +140,30 @@ public:
   }
 
   std::vector<MigrationType> rebalance() override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     return rebalance_unlocked();
   }
 
   StatsType stats() const noexcept override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return compute_stats_unlocked();
   }
 
   size_t node_count() const noexcept override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return nodes_.size();
   }
 
   void clear() noexcept override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     ring_.clear();
     nodes_.clear();
     last_assignment_.clear();
-    metrics_.clear();
+    metrics_->clear();
   }
 
   std::string serialize() const override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     // Simple JSON-like serialization
     std::string result = "{";
     result += "\"vnodes_per_node\":" + std::to_string(vnodes_per_node_) + ",";
@@ -153,17 +186,95 @@ public:
   }
 
   Result deserialize([[maybe_unused]] std::string_view data) override {
-    // Simple parser - in production use a proper JSON library
-    std::unique_lock<std::shared_mutex> lock(mutex_);
-    clear();
-    // For now just return unsupported
-    return Result{ErrorCode::InvalidArgument,
-                  "Deserialization not fully implemented; use JSON library"};
+    // Caller already holds *mutex_ (unique_lock); clear members directly to
+    // avoid re-locking the non-recursive shared_mutex via clear().
+    ring_.clear();
+    nodes_.clear();
+    last_assignment_.clear();
+    preferred_zone_.clear();
+
+    auto extract_uint = [&data](std::string_view key, uint64_t &out) {
+      size_t p = data.find(key);
+      if (p == std::string_view::npos)
+        return;
+      p += key.size();
+      size_t s = p;
+      while (p < data.size() && data[p] >= '0' && data[p] <= '9')
+        ++p;
+      if (p > s)
+        out = std::stoull(std::string(data.substr(s, p - s)));
+    };
+    auto extract_str = [&data](std::string_view key, std::string &out) {
+      size_t p = data.find(key);
+      if (p == std::string_view::npos)
+        return;
+      p += key.size();
+      size_t s = p;
+      while (p < data.size() && data[p] != '"')
+        ++p;
+      out = std::string(data.substr(s, p - s));
+    };
+
+    uint64_t vnp = 0;
+    extract_uint("\"vnodes_per_node\":", vnp);
+    if (vnp != 0)
+      vnodes_per_node_ = static_cast<size_t>(vnp);
+    extract_str("\"preferred_zone\":\"", preferred_zone_);
+
+    size_t arr = data.find("\"nodes\":[");
+    if (arr != std::string_view::npos) {
+      size_t p = arr + 9; // strlen("\"nodes\":[")
+      while (true) {
+        size_t open = data.find('{', p);
+        if (open == std::string_view::npos)
+          break;
+        size_t close = data.find('}', open);
+        if (close == std::string_view::npos)
+          break;
+        std::string_view obj = data.substr(open, close - open);
+        auto obj_uint = [&obj](std::string_view key, uint32_t &out) {
+          size_t q = obj.find(key);
+          if (q == std::string_view::npos)
+            return;
+          q += key.size();
+          size_t s = q;
+          while (q < obj.size() && obj[q] >= '0' && obj[q] <= '9')
+            ++q;
+          if (q > s)
+            out = static_cast<uint32_t>(
+                std::stoull(std::string(obj.substr(s, q - s))));
+        };
+        auto obj_str = [&obj](std::string_view key, std::string &out) {
+          size_t q = obj.find(key);
+          if (q == std::string_view::npos)
+            return;
+          q += key.size();
+          size_t s = q;
+          while (q < obj.size() && obj[q] != '"')
+            ++q;
+          out = std::string(obj.substr(s, q - s));
+        };
+        NodeType node;
+        obj_str("\"id\":\"", node.id);
+        obj_str("\"address\":\"", node.address);
+        obj_uint("\"weight\":", node.weight);
+        obj_str("\"zone\":\"", node.zone);
+        uint32_t st = 0;
+        obj_uint("\"status\":", st);
+        node.status = static_cast<NodeStatus>(st);
+        if (!node.id.empty())
+          nodes_[node.id] = node;
+        p = close + 1;
+      }
+    }
+
+    rebuild_ring_unlocked();
+    return Result{};
   }
 
   // Zone-aware: when set, lookup prefers a node in this zone.
   void preferred_zone(const std::string &zone) {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     preferred_zone_ = zone;
   }
 
@@ -288,13 +399,13 @@ private:
       }
     }
     last_assignment_ = std::move(current);
-    metrics_.record_migrations(static_cast<uint64_t>(migrations.size()));
+    metrics_->record_migrations(static_cast<uint64_t>(migrations.size()));
     return migrations;
   }
 
   StatsType compute_stats_unlocked() const {
     StatsType s;
-    auto snap = metrics_.snapshot();
+    auto snap = metrics_->snapshot();
     s.migration_count = snap.migration_count;
     s.avg_lookup_ns = snap.avg_lookup_ns;
     s.p50_lookup_ns = snap.p50_lookup_ns;
@@ -323,8 +434,8 @@ private:
   std::vector<Key> probe_keys_;
   size_t vnodes_per_node_;
   std::string preferred_zone_;
-  Metrics metrics_;
-  mutable std::shared_mutex mutex_;
+  mutable std::shared_ptr<std::shared_mutex> mutex_;
+  std::shared_ptr<Metrics> metrics_;
   Hasher hasher_;
 };
 

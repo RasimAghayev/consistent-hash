@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <shared_mutex>
@@ -35,15 +36,48 @@ public:
   static constexpr size_t kDefaultProbes = 16;
 
   explicit MultiProbeHasher(size_t probes = kDefaultProbes)
-      : probes_(probes == 0 ? 1 : probes), hasher_{} {
+      : probes_(probes == 0 ? 1 : probes),
+        mutex_(std::make_shared<std::shared_mutex>()),
+        metrics_(std::make_shared<Metrics>()),
+        hasher_{} {
     probe_keys_.reserve(1000);
     for (size_t i = 0; i < 1000; ++i) {
       probe_keys_.push_back(Key("probe:" + std::to_string(i)));
     }
   }
 
+  // Allow copying for LockFreeHasher
+  MultiProbeHasher(const MultiProbeHasher& other)
+      : probes_(other.probes_),
+        nodes_(other.nodes_),
+        index_by_id_(other.index_by_id_),
+        load_(other.load_),
+        last_assignment_(other.last_assignment_),
+        probe_keys_(other.probe_keys_),
+        mutex_(std::make_shared<std::shared_mutex>()),
+        metrics_(std::make_shared<Metrics>()),
+        hasher_(other.hasher_) {}
+
+  MultiProbeHasher& operator=(const MultiProbeHasher& other) {
+    if (this != &other) {
+      std::unique_lock<std::shared_mutex> lock(*mutex_);
+      std::shared_lock<std::shared_mutex> other_lock(*other.mutex_);
+      probes_ = other.probes_;
+      nodes_ = other.nodes_;
+      index_by_id_ = other.index_by_id_;
+      load_ = other.load_;
+      last_assignment_ = other.last_assignment_;
+      probe_keys_ = other.probe_keys_;
+      hasher_ = other.hasher_;
+    }
+    return *this;
+  }
+
+  MultiProbeHasher(MultiProbeHasher&&) = default;
+  MultiProbeHasher& operator=(MultiProbeHasher&&) = default;
+
   void add_node(const NodeType &node) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     auto it = index_by_id_.find(node.id);
     if (it != index_by_id_.end()) {
       nodes_[it->second] = node;
@@ -55,7 +89,7 @@ public:
   }
 
   bool upsert_node(const NodeType &node) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     auto it = index_by_id_.find(node.id);
     if (it != index_by_id_.end()) {
       nodes_[it->second] = node;
@@ -68,7 +102,7 @@ public:
   }
 
   void remove_node(const NodeId &id) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     auto it = index_by_id_.find(id);
     if (it == index_by_id_.end())
       return;
@@ -85,7 +119,7 @@ public:
   }
 
   Result update_weight(const NodeId &id, uint32_t weight) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     auto it = index_by_id_.find(id);
     if (it == index_by_id_.end()) {
       return Result{ErrorCode::NodeNotFound, "Node not found: " + id};
@@ -98,17 +132,17 @@ public:
   }
 
   bool has_node(const NodeId &id) const noexcept override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return index_by_id_.find(id) != index_by_id_.end();
   }
 
   std::optional<NodeId> lookup(const Key &key) const override {
-    std::unique_lock<std::shared_mutex> lock(mutex_); // mutates load
+    std::unique_lock<std::shared_mutex> lock(*mutex_); // mutates load
     return lookup_opt_unlocked(key);
   }
 
   NodeId lookup_or_throw(const Key &key) const override {
-    std::unique_lock<std::shared_mutex> lock(mutex_); // mutates load
+    std::unique_lock<std::shared_mutex> lock(*mutex_); // mutates load
     if (auto opt = lookup_opt_unlocked(key); opt) {
       return *opt;
     }
@@ -116,7 +150,7 @@ public:
   }
 
   std::vector<NodeId> lookup_n(const Key &key, size_t n) const override {
-    std::unique_lock<std::shared_mutex> lock(mutex_); // mutates load
+    std::unique_lock<std::shared_mutex> lock(*mutex_); // mutates load
     std::vector<NodeId> result;
     if (nodes_.empty() || n == 0)
       return result;
@@ -130,10 +164,9 @@ public:
       size_t best_load = std::numeric_limits<size_t>::max();
       bool found = false;
       for (size_t p = 0; p < probes_; ++p) {
-        const size_t idx = static_cast<size_t>(
-            hash_combine(kh, static_cast<uint64_t>(p) +
-                                 static_cast<uint64_t>(round) * 1000003ULL) %
-            total);
+        const size_t idx = (hash_combine(kh, static_cast<uint64_t>(p) +
+                                     static_cast<uint64_t>(round) * 1000003ULL) %
+                          total);
         const NodeId &id = nodes_[idx].id;
         if (seen.count(id))
           continue;
@@ -166,31 +199,31 @@ public:
   }
 
   std::vector<MigrationType> rebalance() override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     return rebalance_locked();
   }
 
   StatsType stats() const noexcept override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     return compute_stats_locked();
   }
 
   size_t node_count() const noexcept override {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return nodes_.size();
   }
 
   void clear() noexcept override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     nodes_.clear();
     index_by_id_.clear();
     load_.clear();
     last_assignment_.clear();
-    metrics_.clear();
+    metrics_->clear();
   }
 
   std::string serialize() const override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     std::string result = "{";
     result += "\"probes\":" + std::to_string(probes_) + ",";
     result += "\"nodes\":[";
@@ -212,14 +245,14 @@ public:
   }
 
   Result deserialize([[maybe_unused]] std::string_view data) override {
-    std::unique_lock<std::shared_mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(*mutex_);
     clear();
     return Result{ErrorCode::InvalidArgument,
                   "Deserialization not fully implemented; use JSON library"};
   }
 
   const std::map<NodeId, size_t> &load() const {
-    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(*mutex_);
     return load_;
   }
 
@@ -242,7 +275,7 @@ private:
       }
     }
     last_assignment_ = std::move(current);
-    metrics_.record_migrations(static_cast<uint64_t>(migrations.size()));
+    metrics_->record_migrations(static_cast<uint64_t>(migrations.size()));
     return migrations;
   }
 
@@ -255,8 +288,7 @@ private:
     size_t best_index = 0;
     size_t best_load = std::numeric_limits<size_t>::max();
     for (size_t p = 0; p < probes_; ++p) {
-      const size_t idx = static_cast<size_t>(
-          hash_combine(kh, static_cast<uint64_t>(p)) % total);
+      const size_t idx = (hash_combine(kh, static_cast<uint64_t>(p)) % total);
       const NodeId &id = nodes_[idx].id;
       auto lit = load_.find(id);
       const size_t l = (lit == load_.end()) ? 0 : lit->second;
@@ -272,7 +304,7 @@ private:
 
   StatsType compute_stats_locked() const {
     StatsType s;
-    auto snap = metrics_.snapshot();
+    auto snap = metrics_->snapshot();
     s.migration_count = snap.migration_count;
     s.avg_lookup_ns = snap.avg_lookup_ns;
     s.p50_lookup_ns = snap.p50_lookup_ns;
@@ -296,13 +328,13 @@ private:
   }
 
   size_t probes_;
+  mutable std::shared_ptr<std::shared_mutex> mutex_;
+  std::shared_ptr<Metrics> metrics_;
   std::vector<NodeType> nodes_;
   std::map<NodeId, size_t> index_by_id_;
   mutable std::map<NodeId, size_t> load_;
   std::map<Key, NodeId> last_assignment_;
   std::vector<Key> probe_keys_;
-  Metrics metrics_;
-  mutable std::shared_mutex mutex_;
   Hasher hasher_;
 };
 

@@ -1,0 +1,99 @@
+groups:
+  - name: consistent-hash.rules
+    rules:
+      # High lookup latency
+      - alert: ConsistentHashHighLatency
+        expr: histogram_quantile(0.99, rate(consistent_hash_lookup_duration_seconds_bucket[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High lookup latency for {{ $labels.algorithm }}"
+          description: "99th percentile lookup latency is {{ $value }}s for algorithm {{ $labels.algorithm }}"
+
+      - alert: ConsistentHashCriticalLatency
+        expr: histogram_quantile(0.99, rate(consistent_hash_lookup_duration_seconds_bucket[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical lookup latency for {{ $labels.algorithm }}"
+          description: "99th percentile lookup latency is {{ $value }}s for algorithm {{ $labels.algorithm }}"
+
+      # High migration rate
+      - alert: ConsistentHashHighMigrationRate
+        expr: rate(consistent_hash_migrations_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High migration rate for {{ $labels.algorithm }}"
+          description: "Migration rate is {{ $value }} per second for algorithm {{ $labels.algorithm }}"
+
+      # Node down
+      - alert: ConsistentHashNodeDown
+        expr: consistent_hash_node_health{status="unhealthy"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node {{ $labels.node_id }} is unhealthy"
+          description: "Node {{ $labels.node_id }} has been unhealthy for more than 1 minute"
+
+      - alert: ConsistentHashNodeDegraded
+        expr: consistent_hash_node_health{status="degraded"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.node_id }} is degraded"
+          description: "Node {{ $labels.node_id }} has been degraded for more than 5 minutes"
+
+      # Distribution skew
+      - alert: ConsistentHashHighSkew
+        expr: consistent_hash_distribution_skew > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High distribution skew for {{ $labels.algorithm }}"
+          description: "Distribution skew (stddev/mean) is {{ $value }} for algorithm {{ $labels.algorithm }}"
+
+      # Hash quality degradation
+      - alert: ConsistentHashPoorAvalanche
+        expr: consistent_hash_avalanche_effect < 0.4
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Poor avalanche effect for {{ $labels.algorithm }}"
+          description: "Avalanche effect is {{ $value }} for algorithm {{ $labels.algorithm }} (should be ~0.5)"
+
+      - alert: ConsistentHashHighCollisionRate
+        expr: consistent_hash_collision_rate > 0.01
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High collision rate for {{ $labels.algorithm }}"
+          description: "Collision rate is {{ $value }} for algorithm {{ $labels.algorithm }}"
+
+      # Cluster capacity
+      - alert: ConsistentHashLowNodeCount
+        expr: consistent_hash_nodes < 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low node count in cluster"
+          description: "Only {{ $value }} nodes available in the consistent hash ring"
+
+      # Lookup errors
+      - alert: ConsistentHashLookupErrors
+        expr: rate(consistent_hash_lookup_errors_total[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Lookup errors detected for {{ $labels.algorithm }}"
+          description: "Lookup error rate is {{ $value }} per second for algorithm {{ $labels.algorithm }}"

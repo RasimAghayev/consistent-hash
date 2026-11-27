@@ -1,0 +1,122 @@
+{
+  "dashboard": {
+    "title": "Consistent Hash Cluster",
+    "uid": "consistent-hash-cluster",
+    "tags": ["consistent-hash", "load-balancer", "distributed-systems"],
+    "timezone": "utc",
+    "schemaVersion": 16,
+    "version": 1,
+    "refresh": "10s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Lookup Latency (p50, p90, p99, p999)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {"expr": "histogram_quantile(0.50, rate(consistent_hash_lookup_duration_seconds_bucket[5m]))", "legendFormat": "p50"},
+          {"expr": "histogram_quantile(0.90, rate(consistent_hash_lookup_duration_seconds_bucket[5m]))", "legendFormat": "p90"},
+          {"expr": "histogram_quantile(0.99, rate(consistent_hash_lookup_duration_seconds_bucket[5m]))", "legendFormat": "p99"},
+          {"expr": "histogram_quantile(0.999, rate(consistent_hash_lookup_duration_seconds_bucket[5m]))", "legendFormat": "p999"}
+        ],
+        "yAxes": [{"format": "s", "label": "Latency"}, {"format": "short"}],
+        "xAxis": {"mode": "time"}
+      },
+      {
+        "id": 2,
+        "title": "Lookup Rate (req/s)",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {"expr": "rate(consistent_hash_lookups_total[5m])", "legendFormat": "{{algorithm}}"}
+        ],
+        "yAxes": [{"format": "ops", "label": "Lookups/sec"}, {"format": "short"}]
+      },
+      {
+        "id": 3,
+        "title": "Node Count",
+        "type": "stat",
+        "gridPos": {"x": 0, "y": 8, "w": 6, "h": 4},
+        "targets": [
+          {"expr": "consistent_hash_nodes", "legendFormat": "Nodes"}
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Migration Rate",
+        "type": "graph",
+        "gridPos": {"x": 6, "y": 8, "w": 12, "h": 8},
+        "targets": [
+          {"expr": "rate(consistent_hash_migrations_total[5m])", "legendFormat": "{{algorithm}}"}
+        ],
+        "yAxes": [{"format": "ops", "label": "Migrations/sec"}, {"format": "short"}]
+      },
+      {
+        "id": 5,
+        "title": "Load Distribution Skew",
+        "type": "graph",
+        "gridPos": {"x": 18, "y": 8, "w": 6, "h": 4},
+        "targets": [
+          {"expr": "consistent_hash_distribution_skew", "legendFormat": "{{algorithm}}"}
+        ],
+        "yAxes": [{"format": "short", "label": "Skew (stddev/mean)"}, {"format": "short"}]
+      },
+      {
+        "id": 6,
+        "title": "Hash Quality - Avalanche Effect",
+        "type": "stat",
+        "gridPos": {"x": 0, "y": 12, "w": 6, "h": 4},
+        "targets": [
+          {"expr": "consistent_hash_avalanche_effect", "legendFormat": "Avalanche"}
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Hash Quality - Collision Rate",
+        "type": "stat",
+        "gridPos": {"x": 6, "y": 12, "w": 6, "h": 4},
+        "targets": [
+          {"expr": "consistent_hash_collision_rate", "legendFormat": "Collision Rate"}
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Node Health Status",
+        "type": "table",
+        "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+        "targets": [
+          {"expr": "consistent_hash_node_health", "format": "table"}
+        ],
+        "columns": [
+          {"text": "Node ID", "type": "string"},
+          {"text": "Status", "type": "string"},
+          {"text": "Consecutive Failures", "type": "number"},
+          {"text": "Latency (ms)", "type": "number"},
+          {"text": "Last Check", "type": "datetime"}
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Algorithm Comparison - Lookup Latency",
+        "type": "bargauge",
+        "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+        "targets": [
+          {"expr": "histogram_quantile(0.99, rate(consistent_hash_lookup_duration_seconds_bucket[5m]))", "legendFormat": "{{algorithm}} p99"}
+        ]
+      },
+      {
+        "id": 10,
+        "title": "Algorithm Comparison - Distribution Quality",
+        "type": "bargauge",
+        "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+        "targets": [
+          {"expr": "consistent_hash_distribution_skew", "legendFormat": "{{algorithm}} skew"}
+        ]
+      }
+    ]
+  }
+}
